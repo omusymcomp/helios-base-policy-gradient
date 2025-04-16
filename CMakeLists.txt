@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 
 project(helios-base VERSION 2023.03)
 
+set(CMAKE_PREFIX_PATH "/home/okayama/libtorch")
+
 if(CMAKE_VERSION VERSION_LESS "3.7.0")
     set(CMAKE_INCLUDE_CURRENT_DIR ON)
 endif()

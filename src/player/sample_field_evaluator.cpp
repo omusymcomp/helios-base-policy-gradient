@@ -1,31 +1,5 @@
 // -*-c++-*-
 
-/*
- *Copyright:
-
- Copyright (C) Hiroki SHIMORA
-
- This code is free software; you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation; either version 3, or (at your option)
- any later version.
-
- This code is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this code; see the file COPYING.  If not, write to
- the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
-
- *EndCopyright:
- */
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
-
 #include "sample_field_evaluator.h"
 
 #include "field_analyzer.h"
@@ -36,178 +10,118 @@
 #include <rcsc/common/logger.h>
 #include <rcsc/math_util.h>
 
+#include <torch/script.h>
+#include <torch/serialize.h>
+
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
-
-// #define DEBUG_PRINT
 
 using namespace rcsc;
 
 static const int VALID_PLAYER_THRESHOLD = 8;
 
+static double evaluate_state(const PredictState & state,
+                              double goal_reward,
+                              double self_bonus,
+                              double enemy_goal_bonus,
+                              double our_goal_penalty,
+                              double progress_coeff);
 
-/*-------------------------------------------------------------------*/
-/*!
-
- */
-static double evaluate_state( const PredictState & state );
-
-
-/*-------------------------------------------------------------------*/
-/*!
-
- */
 SampleFieldEvaluator::SampleFieldEvaluator()
-{
+    : use_nn_(false),
+      save_model_(false),
+      model_load_path_("model.pt"),
+      model_save_path_("output_model.pt"),
+      nn_model_(nullptr),
+      goal_reward_(1.0e+6),
+      self_bonus_(5.0e+5),
+      enemy_goal_bonus_(1.0e+7),
+      our_goal_penalty_(-1.0e+7),
+      progress_coeff_(1.0)
+      {
+        if (use_nn_) {
+            try {
+                nn_model_ = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_load_path_));
+                nn_model_->eval();
+                std::cout << "[INFO] NN model loaded from: " << model_load_path_ << std::endl;
+            } catch (const c10::Error& e) {
+                std::cerr << "[ERROR] Failed to load model: " << e.what() << std::endl;
+            }
+        }
+    }
+    
+    SampleFieldEvaluator::~SampleFieldEvaluator()
+    {
+        if (use_nn_ && save_model_ && nn_model_) {
+            try {
+                nn_model_->save(model_save_path_);
+                std::cout << "[INFO] NN model saved to: " << model_save_path_ << std::endl;
+            } catch (const c10::Error& e) {
+                std::cerr << "[ERROR] Failed to save model: " << e.what() << std::endl;
+            }
+        }
+    }
 
+double SampleFieldEvaluator::operator()(const PredictState & state,
+                                        const std::vector<ActionStatePair> & /*path*/) const
+{
+    if (use_nn_ && nn_model_) {
+        std::vector<double> features;  // 将来的に使う可能性があれば保持
+        // features = extractFeatures(state);
+
+        torch::Tensor input = torch::tensor(features).unsqueeze(0);
+        torch::Tensor output = nn_model_->forward({input}).toTensor();
+
+        return output.item<double>();
+    }
+
+    return evaluate_state(state, goal_reward_, self_bonus_, enemy_goal_bonus_, our_goal_penalty_, progress_coeff_);
 }
 
-/*-------------------------------------------------------------------*/
-/*!
-
- */
-SampleFieldEvaluator::~SampleFieldEvaluator()
-{
-
-}
-
-/*-------------------------------------------------------------------*/
-/*!
-
- */
-double
-SampleFieldEvaluator::operator()( const PredictState & state,
-                                  const std::vector< ActionStatePair > & /*path*/ ) const
-{
-    const double final_state_evaluation = evaluate_state( state );
-
-    //
-    // ???
-    //
-
-    double result = final_state_evaluation;
-
-    return result;
-}
-
-
-/*-------------------------------------------------------------------*/
-/*!
-
- */
-static
-double
-evaluate_state( const PredictState & state )
+static double evaluate_state(const PredictState & state,
+                             double goal_reward,
+                             double self_bonus,
+                             double enemy_goal_bonus,
+                             double our_goal_penalty,
+                             double progress_coeff)
 {
     const ServerParam & SP = ServerParam::i();
-
     const AbstractPlayerObject * holder = state.ballHolder();
 
-#ifdef DEBUG_PRINT
-    dlog.addText( Logger::ACTION_CHAIN,
-                  "========= (evaluate_state) ==========" );
-#endif
-
-    //
-    // if holder is invalid, return bad evaluation
-    //
-    if ( ! holder )
-    {
-#ifdef DEBUG_PRINT
-        dlog.addText( Logger::ACTION_CHAIN,
-                      "(eval) XXX null holder" );
-#endif
-        return - DBL_MAX / 2.0;
-    }
+    if (!holder)
+        return -DBL_MAX / 2.0;
 
     const int holder_unum = holder->unum();
 
+    if (state.ball().pos().x > + (SP.pitchHalfLength() - 0.1)
+        && state.ball().pos().absY() < SP.goalHalfWidth() + 2.0)
+        return enemy_goal_bonus;
 
-    //
-    // ball is in opponent goal
-    //
-    if ( state.ball().pos().x > + ( SP.pitchHalfLength() - 0.1 )
-         && state.ball().pos().absY() < SP.goalHalfWidth() + 2.0 )
-    {
-#ifdef DEBUG_PRINT
-        dlog.addText( Logger::ACTION_CHAIN,
-                      "(eval) *** in opponent goal" );
-#endif
-        return +1.0e+7;
-    }
+    if (state.ball().pos().x < - (SP.pitchHalfLength() - 0.1)
+        && state.ball().pos().absY() < SP.goalHalfWidth())
+        return our_goal_penalty;
 
-    //
-    // ball is in our goal
-    //
-    if ( state.ball().pos().x < - ( SP.pitchHalfLength() - 0.1 )
-         && state.ball().pos().absY() < SP.goalHalfWidth() )
-    {
-#ifdef DEBUG_PRINT
-        dlog.addText( Logger::ACTION_CHAIN,
-                      "(eval) XXX in our goal" );
-#endif
+    if (state.ball().pos().absX() > SP.pitchHalfLength()
+        || state.ball().pos().absY() > SP.pitchHalfWidth())
+        return -DBL_MAX / 2.0;
 
-        return -1.0e+7;
-    }
-
-
-    //
-    // out of pitch
-    //
-    if ( state.ball().pos().absX() > SP.pitchHalfLength()
-         || state.ball().pos().absY() > SP.pitchHalfWidth() )
-    {
-#ifdef DEBUG_PRINT
-        dlog.addText( Logger::ACTION_CHAIN,
-                      "(eval) XXX out of pitch" );
-#endif
-
-        return - DBL_MAX / 2.0;
-    }
-
-
-    //
-    // set basic evaluation
-    //
     double point = state.ball().pos().x;
+    point += std::max(0.0, progress_coeff * (40.0 - SP.theirTeamGoalPos().dist(state.ball().pos())));
 
-    point += std::max( 0.0,
-                       40.0 - ServerParam::i().theirTeamGoalPos().dist( state.ball().pos() ) );
-
-#ifdef DEBUG_PRINT
-    dlog.addText( Logger::ACTION_CHAIN,
-                  "(eval) ball pos (%f, %f)",
-                  state.ball().pos().x, state.ball().pos().y );
-
-    dlog.addText( Logger::ACTION_CHAIN,
-                  "(eval) initial value (%f)", point );
-#endif
-
-    //
-    // add bonus for goal, free situation near offside line
-    //
-    if ( FieldAnalyzer::can_shoot_from( holder->unum() == state.self().unum(),
-                                        holder->pos(),
-                                        state.getPlayers( new OpponentOrUnknownPlayerPredicate( state.ourSide() ) ),
-                                        VALID_PLAYER_THRESHOLD ) )
-    {
-        point += 1.0e+6;
-#ifdef DEBUG_PRINT
-        dlog.addText( Logger::ACTION_CHAIN,
-                      "(eval) bonus for goal %f (%f)", 1.0e+6, point );
-#endif
-
-        if ( holder_unum == state.self().unum() )
-        {
-            point += 5.0e+5;
-#ifdef DEBUG_PRINT
-            dlog.addText( Logger::ACTION_CHAIN,
-                          "(eval) bonus for goal self %f (%f)", 5.0e+5, point );
-#endif
+    if (FieldAnalyzer::can_shoot_from(holder->unum() == state.self().unum(),
+                                      holder->pos(),
+                                      state.getPlayers(new OpponentOrUnknownPlayerPredicate(state.ourSide())),
+                                      VALID_PLAYER_THRESHOLD)) {
+        point += goal_reward;
+        if (holder_unum == state.self().unum()) {
+            point += self_bonus;
         }
     }
 
     return point;
 }
+
+// setter を外部から呼べるようにしても良い（例：config 読み込みやコマンドラインから）

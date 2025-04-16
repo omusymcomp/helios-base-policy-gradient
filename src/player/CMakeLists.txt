@@ -119,13 +119,35 @@ target_include_directories(sample_player
     ${LIBRCSC_INCLUDE_DIR}
   )
 
+# --- Libtorch の追加設定 ---
+
+# Libtorch を見つける
+find_package(Torch REQUIRED)
+
+# include ディレクトリ追加（nn_model クラスなどを使うなら）
 target_link_libraries(sample_player
   PUBLIC
     ${LIBRCSC_LIB}
     Boost::system
     ZLIB::ZLIB
   PRIVATE
-  )
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/.libs/librcsc.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/util/.libs/librcsc_util.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/net/.libs/librcsc_net.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/player/.libs/librcsc_player.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/common/.libs/librcsc_common.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/coach/.libs/librcsc_coach.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/param/.libs/librcsc_param.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/formation/.libs/librcsc_formation.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/monitor/.libs/librcsc_monitor.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/geom/.libs/librcsc_geom.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/color/.libs/librcsc_color.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/clang/.libs/librcsc_clang.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/time/.libs/librcsc_time.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/rcg/.libs/librcsc_rcg.a
+    ${PROJECT_SOURCE_DIR}/../librcsc/rcsc/gz/.libs/librcsc_gz.a
+    ${TORCH_LIBRARIES}
+)
 
 set_target_properties(sample_player
   PROPERTIES
