@@ -1,5 +1,3 @@
-// -*-c++-*-
-
 #include "sample_field_evaluator.h"
 
 #include "field_analyzer.h"
@@ -18,17 +16,44 @@
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
+#include <cstdlib>  // for getenv
 
 using namespace rcsc;
 
 static const int VALID_PLAYER_THRESHOLD = 8;
 
-static double evaluate_state(const PredictState & state,
-                              double goal_reward,
-                              double self_bonus,
-                              double enemy_goal_bonus,
-                              double our_goal_penalty,
-                              double progress_coeff);
+void SampleFieldEvaluator::loadParametersFromFile(const std::string &file_path) {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "[ERROR] Could not open parameter file: " << file_path << std::endl;
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        size_t pos = line.find('=');
+        if (pos != std::string::npos) {
+            std::string key = line.substr(0, pos);
+            double value = std::stod(line.substr(pos + 1));
+
+            if (key == "goal_reward") {
+                goal_reward_ = value;
+            } else if (key == "self_bonus") {
+                self_bonus_ = value;
+            } else if (key == "enemy_goal_bonus") {
+                enemy_goal_bonus_ = value;
+            } else if (key == "our_goal_penalty") {
+                our_goal_penalty_ = value;
+            } else if (key == "progress_coeff") {
+                progress_coeff_ = value;
+            } else if (key == "progress_base") {
+                progress_base_ = value;
+            }
+        }
+    }
+
+    std::cout << "[INFO] Parameters loaded from: " << file_path << std::endl;
+}
 
 SampleFieldEvaluator::SampleFieldEvaluator()
     : use_nn_(false),
@@ -40,53 +65,47 @@ SampleFieldEvaluator::SampleFieldEvaluator()
       self_bonus_(5.0e+5),
       enemy_goal_bonus_(1.0e+7),
       our_goal_penalty_(-1.0e+7),
-      progress_coeff_(1.0)
-      {
-        if (use_nn_) {
-            try {
-                nn_model_ = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_load_path_));
-                nn_model_->eval();
-                std::cout << "[INFO] NN model loaded from: " << model_load_path_ << std::endl;
-            } catch (const c10::Error& e) {
-                std::cerr << "[ERROR] Failed to load model: " << e.what() << std::endl;
-            }
+      progress_coeff_(1.0),
+      progress_base_(0.1) // デフォルト値
+{
+    loadParametersFromFile("config/parameters.conf");
+
+    if (use_nn_) {
+        try {
+            nn_model_ = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_load_path_));
+            nn_model_->eval();
+            std::cout << "[INFO] NN model loaded from: " << model_load_path_ << std::endl;
+        } catch (const c10::Error &e) {
+            std::cerr << "[ERROR] Failed to load model: " << e.what() << std::endl;
         }
     }
-    
-    SampleFieldEvaluator::~SampleFieldEvaluator()
-    {
-        if (use_nn_ && save_model_ && nn_model_) {
-            try {
-                nn_model_->save(model_save_path_);
-                std::cout << "[INFO] NN model saved to: " << model_save_path_ << std::endl;
-            } catch (const c10::Error& e) {
-                std::cerr << "[ERROR] Failed to save model: " << e.what() << std::endl;
-            }
+}
+
+SampleFieldEvaluator::~SampleFieldEvaluator() {
+    if (use_nn_ && save_model_ && nn_model_) {
+        try {
+            nn_model_->save(model_save_path_);
+            std::cout << "[INFO] NN model saved to: " << model_save_path_ << std::endl;
+        } catch (const c10::Error &e) {
+            std::cerr << "[ERROR] Failed to save model: " << e.what() << std::endl;
         }
     }
+}
 
 double SampleFieldEvaluator::operator()(const PredictState & state,
                                         const std::vector<ActionStatePair> & /*path*/) const
 {
-    if (use_nn_ && nn_model_) {
-        std::vector<double> features;  // 将来的に使う可能性があれば保持
-        // features = extractFeatures(state);
-
-        torch::Tensor input = torch::tensor(features).unsqueeze(0);
-        torch::Tensor output = nn_model_->forward({input}).toTensor();
-
-        return output.item<double>();
-    }
-
-    return evaluate_state(state, goal_reward_, self_bonus_, enemy_goal_bonus_, our_goal_penalty_, progress_coeff_);
+    return evaluate_state(state, goal_reward_, self_bonus_, enemy_goal_bonus_,
+                          our_goal_penalty_, progress_coeff_, progress_base_);
 }
 
-static double evaluate_state(const PredictState & state,
-                             double goal_reward,
-                             double self_bonus,
-                             double enemy_goal_bonus,
-                             double our_goal_penalty,
-                             double progress_coeff)
+double SampleFieldEvaluator::evaluate_state(const PredictState & state,
+                                            double goal_reward,
+                                            double self_bonus,
+                                            double enemy_goal_bonus,
+                                            double our_goal_penalty,
+                                            double progress_coeff,
+                                            double progress_base_) const
 {
     const ServerParam & SP = ServerParam::i();
     const AbstractPlayerObject * holder = state.ballHolder();
@@ -109,7 +128,9 @@ static double evaluate_state(const PredictState & state,
         return -DBL_MAX / 2.0;
 
     double point = state.ball().pos().x;
-    point += std::max(0.0, progress_coeff * (40.0 - SP.theirTeamGoalPos().dist(state.ball().pos())));
+
+    double dist = SP.theirTeamGoalPos().dist(state.ball().pos());
+    point += std::exp(progress_base_ * (40.0 - dist));
 
     if (FieldAnalyzer::can_shoot_from(holder->unum() == state.self().unum(),
                                       holder->pos(),
@@ -123,5 +144,3 @@ static double evaluate_state(const PredictState & state,
 
     return point;
 }
-
-// setter を外部から呼べるようにしても良い（例：config 読み込みやコマンドラインから）

@@ -33,6 +33,7 @@
 
 #include <rcsc/player/player_agent.h>
 #include <vector>
+#include <torch/script.h>
 
 class SamplePlayer
     : public rcsc::PlayerAgent {
@@ -43,12 +44,14 @@ private:
     FieldEvaluator::ConstPtr M_field_evaluator;
     ActionGenerator::ConstPtr M_action_generator;
 
+    // NNモデル（TorchScript）を保持するポインタ
+    std::shared_ptr< torch::jit::script::Module > nn_model_;
+    torch::Tensor extractFeatures(const rcsc::WorldModel & wm);
+
 public:
 
     SamplePlayer();
-
-    virtual
-    ~SamplePlayer();
+    virtual ~SamplePlayer();
 
 protected:
 
@@ -56,47 +59,38 @@ protected:
       You can override this method.
       But you must call PlayerAgent::initImpl() in this method.
     */
-    virtual
-    bool initImpl( rcsc::CmdLineParser & cmd_parser );
+    virtual bool initImpl( rcsc::CmdLineParser & cmd_parser );
 
     //! main decision
-    virtual
-    void actionImpl();
+    virtual void actionImpl();
 
     //! communication decision
-    virtual
-    void communicationImpl();
+    virtual void communicationImpl();
 
-    virtual
-    void handleActionStart();
-    virtual
-    void handleActionEnd();
+    virtual void handleActionStart();
+    virtual void handleActionEnd();
 
-    virtual
-    void handleInitMessage();
-    virtual
-    void handleServerParam();
-    virtual
-    void handlePlayerParam();
-    virtual
-    void handlePlayerType();
+    virtual void handleInitMessage();
+    virtual void handleServerParam();
+    virtual void handlePlayerParam();
+    virtual void handlePlayerType();
 
-    virtual
-    FieldEvaluator::ConstPtr createFieldEvaluator() const;
+    virtual FieldEvaluator::ConstPtr createFieldEvaluator() const;
+    virtual ActionGenerator::ConstPtr createActionGenerator() const;
 
-    virtual
-    ActionGenerator::ConstPtr createActionGenerator() const;
+    // モデルを読み込む
+    bool loadModel(const std::string & model_path);
 
-private:
-
+    // 内部処理（前処理・シュート・強制キックなど）
     bool doPreprocess();
     bool doShoot();
     bool doForceKick();
     bool doHeardPassReceive();
+    void doAction(const CooperativeAction & action);
 
 public:
-    virtual
-    FieldEvaluator::ConstPtr getFieldEvaluator() const;
+
+    virtual FieldEvaluator::ConstPtr getFieldEvaluator() const;
 };
 
-#endif
+#endif // SAMPLE_PLAYER_H
