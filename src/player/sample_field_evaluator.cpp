@@ -58,8 +58,8 @@ void SampleFieldEvaluator::loadParametersFromFile(const std::string &file_path) 
 SampleFieldEvaluator::SampleFieldEvaluator()
     : use_nn_(false),
       save_model_(false),
-      model_load_path_("model.pt"),
-      model_save_path_("output_model.pt"),
+      model_load_path_("/home/okayama/rcss/policy-gradient/model.pt"),
+      model_save_path_("/home/okayama/rcss/policy-gradient/output_model.pt"),
       nn_model_(nullptr),
       goal_reward_(1.0e+6),
       self_bonus_(5.0e+5),

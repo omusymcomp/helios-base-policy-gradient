@@ -220,7 +220,7 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
     }
 
     //モデル読み込み処理を追加
-    std::string model_path = config().configDir() + "/model.pt";
+    std::string model_path = "/home/okayama/rcss/policy-gradient/model.pt"; // 修正
     if ( !loadModel(model_path) )
     {
         std::cerr << "***ERROR*** Failed to load NN model from "
@@ -302,8 +302,14 @@ void SamplePlayer::actionImpl()
             return;
         }
 
-        // 状態ベクトルを抽出
         torch::Tensor input = this->extractFeatures(world());
+
+        // 入力次元のチェックを追加
+        if (input.size(1) != 6) {
+            std::cerr << "[ERROR] Invalid input dimensions for the model: "
+                    << input.sizes() << std::endl;
+            return;
+        }
 
         // NNモデルでスコアを予測
         torch::Tensor logits;
@@ -936,7 +942,7 @@ bool SamplePlayer::loadModel(const std::string & model_path)
 {
     try {
         nn_model_ = std::make_shared<torch::jit::script::Module>(
-            torch::jit::load(model_path)
+            torch::jit::load("/home/okayama/rcss/policy-gradient/model.pt") // 修正
         );
         std::cerr << "[INFO] Loaded NN model from: " << model_path << std::endl;
         return true;
