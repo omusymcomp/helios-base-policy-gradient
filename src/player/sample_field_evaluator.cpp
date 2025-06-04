@@ -68,7 +68,7 @@ SampleFieldEvaluator::SampleFieldEvaluator()
       progress_coeff_(1.0),
       progress_base_(0.1) // デフォルト値
 {
-    loadParametersFromFile("config/parameters.conf");
+    loadParametersFromFile("/home/okayama/rcss/policy-gradient/config/parameters.conf");
 
     if (use_nn_) {
         try {
