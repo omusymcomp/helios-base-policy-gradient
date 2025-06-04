@@ -52,7 +52,7 @@ void SampleFieldEvaluator::loadParametersFromFile(const std::string &file_path) 
         }
     }
 
-    std::cout << "[INFO] Parameters loaded from: " << file_path << std::endl;
+    //std::cout << "[INFO] Parameters loaded from: " << file_path << std::endl;
 }
 
 SampleFieldEvaluator::SampleFieldEvaluator()
