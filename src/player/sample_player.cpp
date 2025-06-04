@@ -238,6 +238,7 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
 */
 void SamplePlayer::actionImpl()
 {
+    //std::cerr << "[DEBUG] Entering actionImpl. Time: " << world().time() << std::endl;
     if (this->audioSensor().trainerMessageTime() == world().time())
     {
         std::cerr << world().ourTeamName() << ' ' << world().self().unum()
@@ -260,7 +261,8 @@ void SamplePlayer::actionImpl()
 
     // 特殊状況の処理
     if (doPreprocess())
-    {
+    {   
+        //std::cerr << "[DEBUG] doPreprocess returned true. Exiting actionImpl." << std::endl;
         dlog.addText(Logger::TEAM, __FILE__ ": preprocess done");
         return;
     }
@@ -291,10 +293,14 @@ void SamplePlayer::actionImpl()
     // PlayOn モードの場合
     if (world().gameMode().type() == GameMode::PlayOn)
     {
+        std::cerr << "[DEBUG] Entering PlayOn mode." << std::endl;
+
         ActionChainHolder::instance().update(world());
+        std::cerr << "[DEBUG] ActionChainHolder updated." << std::endl;
 
         // 候補アクションの取得
         std::vector<ActionStatePair> candidates = ActionChainHolder::instance().graph().getAllChain();
+        std::cerr << "[DEBUG] Number of action candidates: " << candidates.size() << std::endl;
 
         if (candidates.empty())
         {
@@ -303,8 +309,9 @@ void SamplePlayer::actionImpl()
         }
 
         torch::Tensor input = this->extractFeatures(world());
+        std::cerr << "[DEBUG] Extracted features: " << input << std::endl;
 
-        // 入力次元のチェックを追加
+        // 入力次元のチェック
         if (input.size(1) != 6) {
             std::cerr << "[ERROR] Invalid input dimensions for the model: "
                     << input.sizes() << std::endl;
@@ -316,6 +323,7 @@ void SamplePlayer::actionImpl()
         try
         {
             logits = nn_model_->forward({input}).toTensor(); // shape: [1, num_actions]
+            std::cerr << "[DEBUG] Model logits: " << logits << std::endl;
         }
         catch (const c10::Error &e)
         {
@@ -325,6 +333,7 @@ void SamplePlayer::actionImpl()
 
         // Softmax による確率計算
         torch::Tensor probabilities = torch::softmax(logits, 1); // shape: [1, num_actions]
+        std::cerr << "[DEBUG] Probabilities: " << probabilities << std::endl;
 
         // 確率ベクトルを取得
         if (probabilities.dim() != 2 || probabilities.size(0) != 1) {
@@ -354,6 +363,7 @@ void SamplePlayer::actionImpl()
         static std::mt19937 gen(std::random_device{}());
         std::discrete_distribution<int> dist(probs.begin(), probs.end());
         int selected_idx = dist(gen);
+        std::cerr << "[DEBUG] Selected action index: " << selected_idx << std::endl;
 
         if (selected_idx < 0 || selected_idx >= static_cast<int>(probs.size())) {
             std::cerr << "[ERROR] Invalid action index sampled: " << selected_idx << std::endl;
@@ -362,9 +372,11 @@ void SamplePlayer::actionImpl()
 
         // 選択したアクションを取得
         const CooperativeAction &selected_action = candidates[selected_idx].action();
+        std::cerr << "[DEBUG] Selected action category: " << selected_action.category() << std::endl;
 
         // 選択したアクションを実行
         doAction(selected_action);
+        std::cerr << "[DEBUG] Action executed." << std::endl;
         return;
     }
 
@@ -852,13 +864,18 @@ torch::Tensor SamplePlayer::extractFeatures(const rcsc::WorldModel & wm)
 {
     std::vector<float> features;
 
-    // 状態ベクトルに含める項目
     features.push_back(wm.ball().pos().x);
     features.push_back(wm.ball().pos().y);
     features.push_back(wm.self().pos().x);
     features.push_back(wm.self().pos().y);
     features.push_back(wm.self().vel().x);
     features.push_back(wm.self().vel().y);
+
+    std::cerr << "[DEBUG] Extracted features: ";
+    for (float f : features) {
+        std::cerr << f << " ";
+    }
+    std::cerr << std::endl;
 
     return torch::tensor(features).unsqueeze(0);  // shape: [1, feature_dim]
 }
@@ -881,30 +898,28 @@ torch::Tensor SamplePlayer::extractFeatures(const rcsc::WorldModel & wm)
 */
 void SamplePlayer::doAction(const CooperativeAction & action)
 {
+    std::cerr << "[DEBUG] Executing action of category: " << action.category() << std::endl;
+
     switch (action.category()) {
         case CooperativeAction::Hold:
-            dlog.addText(Logger::ACTION, "doAction: Hold");
             if (!Body_HoldBall().execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Hold action." << std::endl;
             }
             break;
 
         case CooperativeAction::Dribble:
-            dlog.addText(Logger::ACTION, "doAction: Dribble");
             if (!Body_Dribble(action.targetPoint(), 0.5, action.firstDashPower(), 3).execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Dribble action." << std::endl;
             }
             break;
 
         case CooperativeAction::Pass:
-            dlog.addText(Logger::ACTION, "doAction: Pass");
             if (!Body_Pass().execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Pass action." << std::endl;
             }
             break;
 
         case CooperativeAction::Shoot:
-            dlog.addText(Logger::ACTION, "doAction: Shoot");
             if (!Body_SmartKick(action.targetPoint(),
                                 ServerParam::i().ballSpeedMax(),
                                 ServerParam::i().ballSpeedMax() * 0.96,
@@ -914,14 +929,12 @@ void SamplePlayer::doAction(const CooperativeAction & action)
             break;
 
         case CooperativeAction::Clear:
-            dlog.addText(Logger::ACTION, "doAction: Clear");
             if (!Body_ClearBall().execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Clear action." << std::endl;
             }
             break;
 
         case CooperativeAction::Move:
-            dlog.addText(Logger::ACTION, "doAction: Move");
             if (!Body_GoToPoint(action.targetPoint(), 0.5, action.firstDashPower()).execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Move action." << std::endl;
             }
