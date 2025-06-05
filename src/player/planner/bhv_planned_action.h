@@ -30,6 +30,8 @@
 #include <rcsc/player/soccer_action.h>
 #include <rcsc/geom/vector_2d.h>
 
+#include <torch/script.h> // PyTorch C++ API
+#include <memory>
 #include <vector>
 
 namespace rcsc {
@@ -45,6 +47,9 @@ class Bhv_PlannedAction
 private:
     const ActionChainGraph & M_chain_graph;
 
+    // ニューラルネットワークモデル（静的メンバー変数）
+    static std::shared_ptr<torch::jit::script::Module> nn_model_;
+
 public:
     Bhv_PlannedAction( const ActionChainGraph & chain_graph );
     Bhv_PlannedAction();
@@ -57,6 +62,8 @@ private:
 
     rcsc::Vector2D getKeepBallVel( const rcsc::WorldModel & wm );
 
+    // 特徴量を抽出するヘルパーメソッド
+    torch::Tensor extractFeatures(const rcsc::WorldModel & wm) const;
 };
 
 #endif

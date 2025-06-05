@@ -14,37 +14,23 @@ namespace rcsc {
 class SampleFieldEvaluator : public FieldEvaluator {
 private:
     bool use_nn_;                              // NNを使うかどうか
-    bool save_model_;                          // モデルを保存するかどうか
     std::string model_load_path_;              // モデル読み込みパス
-    std::string model_save_path_;              // モデル保存パス
     std::shared_ptr<torch::jit::script::Module> nn_model_;  // NN モデル本体
 
-    // 最適化対象パラメータ
-    double goal_reward_;
-    double self_bonus_;
-    double enemy_goal_bonus_;
-    double our_goal_penalty_;
-    double progress_coeff_;
-    double progress_base_;
-
-    // 外部ファイルからパラメータを読み込む関数
-    void loadParametersFromFile(const std::string &file_path);
-
-    // 評価関数本体
-    double evaluate_state(const PredictState & state,
-                          double goal_reward,
-                          double self_bonus,
-                          double enemy_goal_bonus,
-                          double our_goal_penalty,
-                          double progress_coeff,
-                          double progress_base_) const;
+    // 評価値を計算する関数
+    double calculateFieldEvaluation(const std::vector<double> &heuristics,
+                                    const std::vector<double> &weights) const;
 
 public:
     SampleFieldEvaluator();
     virtual ~SampleFieldEvaluator();
 
+    // 評価関数のオーバーロード
     virtual double operator()(const PredictState & state,
                               const std::vector<ActionStatePair> & path) const override;
+    
+    // ヒューリスティックを計算する関数
+    std::vector<double> calculateHeuristics(const PredictState & state) const;
 };
 
 } // namespace rcsc

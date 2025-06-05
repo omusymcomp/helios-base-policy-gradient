@@ -1,146 +1,130 @@
 #include "sample_field_evaluator.h"
 
 #include "field_analyzer.h"
-#include "simple_pass_checker.h"
-
-#include <rcsc/player/player_evaluator.h>
 #include <rcsc/common/server_param.h>
 #include <rcsc/common/logger.h>
-#include <rcsc/math_util.h>
 
 #include <torch/script.h>
-#include <torch/serialize.h>
-
 #include <iostream>
-#include <fstream>
-#include <algorithm>
 #include <cmath>
 #include <cfloat>
-#include <cstdlib>  // for getenv
 
 using namespace rcsc;
 
-static const int VALID_PLAYER_THRESHOLD = 8;
-
-void SampleFieldEvaluator::loadParametersFromFile(const std::string &file_path) {
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        std::cerr << "[ERROR] Could not open parameter file: " << file_path << std::endl;
-        return;
-    }
-
-    std::string line;
-    while (std::getline(file, line)) {
-        size_t pos = line.find('=');
-        if (pos != std::string::npos) {
-            std::string key = line.substr(0, pos);
-            double value = std::stod(line.substr(pos + 1));
-
-            if (key == "goal_reward") {
-                goal_reward_ = value;
-            } else if (key == "self_bonus") {
-                self_bonus_ = value;
-            } else if (key == "enemy_goal_bonus") {
-                enemy_goal_bonus_ = value;
-            } else if (key == "our_goal_penalty") {
-                our_goal_penalty_ = value;
-            } else if (key == "progress_coeff") {
-                progress_coeff_ = value;
-            } else if (key == "progress_base") {
-                progress_base_ = value;
-            }
-        }
-    }
-
-    //std::cout << "[INFO] Parameters loaded from: " << file_path << std::endl;
-}
-
 SampleFieldEvaluator::SampleFieldEvaluator()
-    : use_nn_(false),
-      save_model_(false),
-      model_load_path_("/home/okayama/rcss/policy-gradient/model.pt"),
-      model_save_path_("/home/okayama/rcss/policy-gradient/output_model.pt"),
-      nn_model_(nullptr),
-      goal_reward_(1.0e+6),
-      self_bonus_(5.0e+5),
-      enemy_goal_bonus_(1.0e+7),
-      our_goal_penalty_(-1.0e+7),
-      progress_coeff_(1.0),
-      progress_base_(0.1) // デフォルト値
+    : use_nn_(true),
+      model_load_path_("/home/okayama/rcss/policy-gradient/model_with_attention.pt"),
+      nn_model_(nullptr)
 {
-    loadParametersFromFile("/home/okayama/rcss/policy-gradient/config/parameters.conf");
-
     if (use_nn_) {
         try {
             nn_model_ = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_load_path_));
             nn_model_->eval();
-            std::cout << "[INFO] NN model loaded from: " << model_load_path_ << std::endl;
+            //std::cerr << "[INFO] NN model loaded from: " << model_load_path_ << std::endl;
         } catch (const c10::Error &e) {
             std::cerr << "[ERROR] Failed to load model: " << e.what() << std::endl;
         }
     }
 }
 
-SampleFieldEvaluator::~SampleFieldEvaluator() {
-    if (use_nn_ && save_model_ && nn_model_) {
-        try {
-            nn_model_->save(model_save_path_);
-            std::cout << "[INFO] NN model saved to: " << model_save_path_ << std::endl;
-        } catch (const c10::Error &e) {
-            std::cerr << "[ERROR] Failed to save model: " << e.what() << std::endl;
-        }
-    }
-}
+SampleFieldEvaluator::~SampleFieldEvaluator() {}
 
 double SampleFieldEvaluator::operator()(const PredictState & state,
                                         const std::vector<ActionStatePair> & /*path*/) const
 {
-    return evaluate_state(state, goal_reward_, self_bonus_, enemy_goal_bonus_,
-                          our_goal_penalty_, progress_coeff_, progress_base_);
-}
-
-double SampleFieldEvaluator::evaluate_state(const PredictState & state,
-                                            double goal_reward,
-                                            double self_bonus,
-                                            double enemy_goal_bonus,
-                                            double our_goal_penalty,
-                                            double progress_coeff,
-                                            double progress_base_) const
-{
-    const ServerParam & SP = ServerParam::i();
-    const AbstractPlayerObject * holder = state.ballHolder();
-
-    if (!holder)
-        return -DBL_MAX / 2.0;
-
-    const int holder_unum = holder->unum();
-
-    if (state.ball().pos().x > + (SP.pitchHalfLength() - 0.1)
-        && state.ball().pos().absY() < SP.goalHalfWidth() + 2.0)
-        return enemy_goal_bonus;
-
-    if (state.ball().pos().x < - (SP.pitchHalfLength() - 0.1)
-        && state.ball().pos().absY() < SP.goalHalfWidth())
-        return our_goal_penalty;
-
-    if (state.ball().pos().absX() > SP.pitchHalfLength()
-        || state.ball().pos().absY() > SP.pitchHalfWidth())
-        return -DBL_MAX / 2.0;
-
-    double point = state.ball().pos().x;
-
-    double dist = SP.theirTeamGoalPos().dist(state.ball().pos());
-    point += std::exp(progress_base_ * (40.0 - dist));
-
-    if (FieldAnalyzer::can_shoot_from(holder->unum() == state.self().unum(),
-                                      holder->pos(),
-                                      state.getPlayers(new OpponentOrUnknownPlayerPredicate(state.ourSide())),
-                                      VALID_PLAYER_THRESHOLD)) {
-        point += goal_reward;
-        if (holder_unum == state.self().unum()) {
-            point += self_bonus;
-        }
+    if (!use_nn_ || !nn_model_) {
+        std::cerr << "[ERROR] NN model is not loaded." << std::endl;
+        return -DBL_MAX;
     }
 
-    return point;
+    // ヒューリスティックを計算
+    std::vector<double> heuristics = calculateHeuristics(state);
+
+    // 状態とヒューリスティックをテンソルに変換
+    torch::Tensor state_tensor = torch::tensor({
+        state.ball().pos().x / 50.0,
+        state.ball().pos().y / 34.0,
+        state.self().pos().x / 50.0,
+        state.self().pos().y / 34.0,
+        state.self().vel().x / 5.0,
+        state.self().vel().y / 5.0
+    }, torch::kFloat).unsqueeze(0); // shape: [1, feature_dim]
+
+    torch::Tensor heuristics_tensor = torch::tensor(heuristics, torch::kFloat).unsqueeze(0); // shape: [1, num_heuristics]
+
+    try {
+        auto outputs = nn_model_->forward({state_tensor, heuristics_tensor}).toTuple();
+        // 正しい順序で取得
+        torch::Tensor logits_tensor = outputs->elements()[0].toTensor();   // optional
+        torch::Tensor weights_tensor = outputs->elements()[1].toTensor();  // ← 正しくここから取得！
+
+        std::vector<double> weights(weights_tensor.data_ptr<float>(),
+                                    weights_tensor.data_ptr<float>() + weights_tensor.numel());
+
+        return calculateFieldEvaluation(heuristics, weights);
+    } catch (const c10::Error &e) {
+        std::cerr << "[ERROR] NN forward failed: " << e.what() << std::endl;
+        return -DBL_MAX;
+    }
+
+}
+
+std::vector<double> SampleFieldEvaluator::calculateHeuristics(const PredictState & state) const {
+    std::vector<double> heuristics;
+    const ServerParam & SP = ServerParam::i();
+
+    const AbstractPlayerObject * holder = state.ballHolder();
+
+    // h₁: ボールの x 位置
+    heuristics.push_back(state.ball().pos().x);
+
+    // h₂: ボールの y 位置（絶対値）
+    heuristics.push_back(std::abs(state.ball().pos().y));
+
+    // h₃: ゴールとの距離（expでスケーリング）
+    double dist_to_goal = SP.theirTeamGoalPos().dist(state.ball().pos());
+    heuristics.push_back(std::exp(-dist_to_goal / 10.0)); // 距離に応じた正規化
+
+    // h₄: 自分がボールキック可能か（距離ベースで近似）
+    const PlayerType * self_type = state.self().playerTypePtr();
+    double kickable_area = self_type->kickableArea();
+    bool is_kickable = state.self().pos().dist(state.ball().pos()) <= kickable_area;
+    heuristics.push_back(is_kickable ? 1.0 : 0.0);
+
+    // h₅: 自分とボールの速度差（正規化）
+    double rel_vel = (state.self().vel() - state.ball().vel()).r();
+    heuristics.push_back(std::tanh(rel_vel)); // -1〜1に圧縮
+
+    // h₆: ボールの速度
+    heuristics.push_back(std::tanh(state.ball().vel().r())); // -1〜1に圧縮
+
+    // h₇: ボールと自分の距離（近いほど有利）
+    double dist_to_ball = state.self().pos().dist(state.ball().pos());
+    heuristics.push_back(std::exp(-dist_to_ball));
+
+    // h₈: ボールの位置がゴールラインに近いか（±xの端に寄っているか）
+    double goal_line_proximity = std::max(0.0, std::abs(state.ball().pos().x) - (SP.pitchHalfLength() - 5.0)) / 5.0;
+    heuristics.push_back(goal_line_proximity);
+
+    // h₉: 自分の速度（ダッシュ中か）
+    heuristics.push_back(std::tanh(state.self().vel().r()));
+
+    // h₁₀: 自分の角度（正面を向いているか）→ 簡易として body angle の cos を使う
+    heuristics.push_back(std::cos(state.self().body().radian()));
+
+    return heuristics;
+}
+
+double SampleFieldEvaluator::calculateFieldEvaluation(const std::vector<double> &heuristics,
+                                                      const std::vector<double> &weights) const {
+    if (heuristics.size() != weights.size()) {
+        std::cerr << "[ERROR] Heuristics and weights size mismatch!" << std::endl;
+        return -DBL_MAX;
+    }
+
+    double evaluation = 0.0;
+    for (size_t i = 0; i < heuristics.size(); ++i) {
+        evaluation += weights[i] * heuristics[i];
+    }
+    return evaluation;
 }

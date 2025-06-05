@@ -220,7 +220,7 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
     }
 
     //モデル読み込み処理を追加
-    std::string model_path = "/home/okayama/rcss/policy-gradient/model.pt"; // 修正
+    std::string model_path = "/home/okayama/rcss/policy-gradient/model_with_attention.pt"; // 修正
     if ( !loadModel(model_path) )
     {
         std::cerr << "***ERROR*** Failed to load NN model from "
@@ -267,30 +267,45 @@ void SamplePlayer::actionImpl()
         return;
     }
 
-    // 現在の役割を作成
+     //
+    // update action chain
+    //
+    //std::cerr << "[DEBUG] Before updating ActionChainHolder." << std::endl;
+    ActionChainHolder::instance().update(world());
+    //std::cerr << "[DEBUG] After updating ActionChainHolder." << std::endl;
+
+    //
+    // create current role
+    //
     SoccerRole::Ptr role_ptr;
     {
-        role_ptr = Strategy::i().createRole(world().self().unum(), world());
+        role_ptr = Strategy::i().createRole( world().self().unum(), world() );
 
-        if (!role_ptr)
-        {
-            std::cerr << config().teamName() << ": "
-                      << world().self().unum()
-                      << " Error. Role is not registered.\nExit ..."
-                      << std::endl;
-            M_client->setServerAlive(false);
+        if (!role_ptr) {
+            //std::cerr << "[ERROR] Failed to create role for player: " << world().self().unum() << std::endl;
             return;
         }
+        //std::cerr << "[DEBUG] Assigned role: " << role_ptr << " for player: " << world().self().unum() << std::endl;
     }
 
-    // 役割が実行可能であれば実行
+
+    //
+    // override execute if role accept
+    //
     if (role_ptr->acceptExecution(world()))
     {
+        //std::cerr << "[DEBUG] Role accepted execution: " << role_ptr << std::endl;
         role_ptr->execute(this);
         return;
     }
+    else
+    {
+        //std::cerr << "[DEBUG] Role did not accept execution." << std::endl;
+    }
 
     // PlayOn モードの場合
+    //std::cerr << "[DEBUG] Current game mode: " << world().gameMode().type() << std::endl;
+
     if (world().gameMode().type() == GameMode::PlayOn)
     {
         std::cerr << "[DEBUG] Entering PlayOn mode." << std::endl;
@@ -301,6 +316,9 @@ void SamplePlayer::actionImpl()
         // 候補アクションの取得
         std::vector<ActionStatePair> candidates = ActionChainHolder::instance().graph().getAllChain();
         std::cerr << "[DEBUG] Number of action candidates: " << candidates.size() << std::endl;
+        for (const auto &candidate : candidates) {
+            std::cerr << "[DEBUG] Candidate action category: " << candidate.action().category() << std::endl;
+        }
 
         if (candidates.empty())
         {
@@ -862,22 +880,14 @@ SamplePlayer::createFieldEvaluator() const
 */
 torch::Tensor SamplePlayer::extractFeatures(const rcsc::WorldModel & wm) 
 {
-    std::vector<float> features;
-
-    features.push_back(wm.ball().pos().x);
-    features.push_back(wm.ball().pos().y);
-    features.push_back(wm.self().pos().x);
-    features.push_back(wm.self().pos().y);
-    features.push_back(wm.self().vel().x);
-    features.push_back(wm.self().vel().y);
-
-    std::cerr << "[DEBUG] Extracted features: ";
-    for (float f : features) {
-        std::cerr << f << " ";
-    }
-    std::cerr << std::endl;
-
-    return torch::tensor(features).unsqueeze(0);  // shape: [1, feature_dim]
+    std::vector<double> features = {
+        wm.ball().pos().x / 50.0,  // 正規化例
+        wm.ball().pos().y / 34.0,
+        wm.self().pos().x / 50.0,
+        wm.self().pos().y / 34.0,
+        wm.self().vel().x / 5.0,
+        wm.self().vel().y / 5.0
+    }; // shape: [1, feature_dim]
 }
 /*-------------------------------------------------------------------*/
 /*!
@@ -903,19 +913,27 @@ void SamplePlayer::doAction(const CooperativeAction & action)
     switch (action.category()) {
         case CooperativeAction::Hold:
             if (!Body_HoldBall().execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Hold action." << std::endl;
+                std::cerr << "[ERROR] Failed to execute Hold action. Trying Move action." << std::endl;
+                Body_GoToPoint(world().ball().pos(), 0.5, ServerParam::i().maxDashPower()).execute(this);
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Hold action." << std::endl;
             }
             break;
 
         case CooperativeAction::Dribble:
             if (!Body_Dribble(action.targetPoint(), 0.5, action.firstDashPower(), 3).execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Dribble action." << std::endl;
+                std::cerr << "[ERROR] Failed to execute Dribble action. Trying Move action." << std::endl;
+                Body_GoToPoint(world().ball().pos(), 0.5, ServerParam::i().maxDashPower()).execute(this);
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Dribble action." << std::endl;
             }
             break;
 
         case CooperativeAction::Pass:
             if (!Body_Pass().execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Pass action." << std::endl;
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Pass action." << std::endl;
             }
             break;
 
@@ -924,19 +942,25 @@ void SamplePlayer::doAction(const CooperativeAction & action)
                                 ServerParam::i().ballSpeedMax(),
                                 ServerParam::i().ballSpeedMax() * 0.96,
                                 3).execute(this)) {
-                std::cerr << "[ERROR] Failed to execute SmartKick action." << std::endl;
+                std::cerr << "[ERROR] Failed to execute Shoot action." << std::endl;
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Shoot action." << std::endl;
             }
             break;
 
         case CooperativeAction::Clear:
             if (!Body_ClearBall().execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Clear action." << std::endl;
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Clear action." << std::endl;
             }
             break;
 
         case CooperativeAction::Move:
             if (!Body_GoToPoint(action.targetPoint(), 0.5, action.firstDashPower()).execute(this)) {
                 std::cerr << "[ERROR] Failed to execute Move action." << std::endl;
+            } else {
+                std::cerr << "[DEBUG] Successfully executed Move action." << std::endl;
             }
             break;
 
@@ -946,6 +970,8 @@ void SamplePlayer::doAction(const CooperativeAction & action)
                       << static_cast<int>(action.category()) << std::endl;
             break;
     }
+
+    std::cerr << "[DEBUG] Finished executing action of category: " << action.category() << std::endl;
 }
 /*-------------------------------------------------------------------*/
 /*!
@@ -955,7 +981,7 @@ bool SamplePlayer::loadModel(const std::string & model_path)
 {
     try {
         nn_model_ = std::make_shared<torch::jit::script::Module>(
-            torch::jit::load("/home/okayama/rcss/policy-gradient/model.pt") // 修正
+            torch::jit::load("/home/okayama/rcss/policy-gradient/model_with_attention.pt") // 修正
         );
         std::cerr << "[INFO] Loaded NN model from: " << model_path << std::endl;
         return true;

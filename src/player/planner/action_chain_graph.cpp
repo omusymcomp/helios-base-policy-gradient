@@ -152,7 +152,9 @@ ActionChainGraph::calculateResult( const WorldModel & wm )
     //
     // best first
     //
-    calculateResultBestFirstSearch( wm, &n_evaluated );
+    // std::cerr << "[DEBUG] Starting calculateResultBestFirstSearch" << std::endl;
+    calculateResultBestFirstSearch(wm, &n_evaluated);
+    // std::cerr << "[DEBUG] Finished calculateResultBestFirstSearch. Evaluated actions: " << n_evaluated << std::endl;
 
     if ( M_result.empty() )
     {
@@ -173,6 +175,19 @@ ActionChainGraph::calculateResult( const WorldModel & wm )
                      M_best_chain_count,
                      M_result,
                      M_best_evaluation );
+//     for (std::vector<ActionStatePair>::const_iterator it = candidates.begin();
+//      it != candidates.end();
+//      ++it) {
+//     double ev = (*M_evaluator)((*it).state(), candidate_series);
+//     std::cerr << "[DEBUG] Evaluated action: " << (*it).action().description()
+//               << ", Evaluation value: " << ev << std::endl;
+// }
+    
+    // std::cerr << "[DEBUG] Final M_result size: " << M_result.size() << std::endl;
+    // for (const auto &action_state : M_result) {
+    //     std::cerr << "[DEBUG] Final action category: " << action_state.action().category()
+    //             << ", Description: " << action_state.action().description() << std::endl;
+    // }
 
 #if (defined DEBUG_PROFILE) || (defined ACTION_CHAIN_LOAD_DEBUG)
     const double msec = timer.elapsedReal();
@@ -469,12 +484,15 @@ ActionChainGraph::calculateResultBestFirstSearch( const WorldModel & wm,
         //
         // generate action candidates
         //
-        std::vector< ActionStatePair > candidates;
-        if ( series.size() < M_max_chain_length
-             && ( series.empty()
-                  || ! ( *( series.rbegin() ) ).action().isFinalAction() ) )
-        {
-            M_action_generator->generate( &candidates, *state, wm, series );
+        std::vector<ActionStatePair> candidates;
+        if (series.size() < M_max_chain_length
+            && (series.empty() || !(*(series.rbegin())).action().isFinalAction())) {
+            M_action_generator->generate(&candidates, *state, wm, series);
+            //std::cerr << "[DEBUG] Generated candidates: " << candidates.size() << std::endl;
+            for (const auto &candidate : candidates) {
+                //std::cerr << "[DEBUG] Candidate action category: " << candidate.action().category()
+                //        << ", Description: " << candidate.action().description() << std::endl;
+            }
 #ifdef ACTION_CHAIN_DEBUG
             dlog.addText( Logger::ACTION_CHAIN,
                           ">>>> generate (%s[%d]) candidate_size=%d <<<<<",

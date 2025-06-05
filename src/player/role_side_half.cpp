@@ -87,19 +87,22 @@ RoleSideHalf::execute( PlayerAgent * agent )
 /*!
 
  */
-void
-RoleSideHalf::doKick( PlayerAgent * agent )
+void RoleSideHalf::doKick(PlayerAgent * agent)
 {
-    if ( Bhv_PlannedAction().execute( agent ) )
+    //std::cerr << "[DEBUG] RoleSideHalf::doKick called for player: " 
+    //          << agent->world().self().unum() << std::endl;
+
+    if (Bhv_PlannedAction().execute(agent))
     {
-        dlog.addText( Logger::TEAM,
-                      __FILE__": (execute) do planned action" );
-        agent->debugClient().addMessage( "PlannedAction" );
+        dlog.addText(Logger::TEAM, __FILE__": (execute) do planned action");
+        //std::cerr << "[DEBUG] Bhv_PlannedAction::execute succeeded in RoleSideHalf::doKick." << std::endl;
+        agent->debugClient().addMessage("PlannedAction");
         return;
     }
 
-    Body_HoldBall().execute( agent );
-    agent->setNeckAction( new Neck_ScanField() );
+    //std::cerr << "[DEBUG] Bhv_PlannedAction::execute failed in RoleSideHalf::doKick. Falling back to Body_HoldBall." << std::endl;
+    Body_HoldBall().execute(agent);
+    agent->setNeckAction(new Neck_ScanField());
 }
 
 /*-------------------------------------------------------------------*/
