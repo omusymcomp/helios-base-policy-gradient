@@ -61,6 +61,8 @@
 
 #include <torch/script.h>
 #include <torch/torch.h>
+#include <tuple>
+#include <vector>
 #include <random>
 
 #include <fstream> // CSV出力用
@@ -91,6 +93,17 @@ public:
 private:
 
 };
+
+// 構造体を修正
+struct StepData {
+    std::vector<double> features;
+    int cycle; // サイクル数
+    int action_index;
+    double reward;
+};
+static std::vector<StepData> episode_buffer;
+static bool prev_our_ball = false;
+
 
 /*-------------------------------------------------------------------*/
 /*!
@@ -392,36 +405,50 @@ bool Bhv_PlannedAction::execute(PlayerAgent * agent)
     // heuristics_tensor ではなく、最初から vector で受け取る！
     std::vector<double> heuristics_vec = evaluator.calculateHeuristics(predict_state);
 
-    static std::ofstream csv_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::out | std::ios::app);
-    // ファイルが空の場合のみヘッダーを書く
-    if (csv_file.tellp() == 0) {
-        csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y";
-        for (size_t i = 0; i < heuristics_vec.size(); ++i) {
-            csv_file << ",heuristic_" << i;
-        }
-        csv_file << ",action_index,reward" << std::endl;
+
+    // 状態特徴量ベクトルを作成
+    std::vector<double> features = {
+        wm.ball().pos().x, wm.ball().pos().y,
+        wm.self().pos().x, wm.self().pos().y,
+        wm.self().vel().x, wm.self().vel().y
+    };
+
+    // バッファに追加
+    StepData step;
+    step.features = features;
+    step.cycle = wm.time().cycle();
+    step.action_index = static_cast<int>(selected_idx);
+    step.reward = reward;
+    episode_buffer.push_back(step);
+
+    // エピソード終了判定
+    bool our_ball = (predict_state.ballHolder()->side() == wm.ourSide());
+    bool episode_end = false;
+    if (prev_our_ball && (!our_ball || wm.gameMode().type() == GameMode::AfterGoal_ || wm.gameMode().type() != GameMode::PlayOn)) {
+        episode_end = true;
     }
+    prev_our_ball = our_ball;
 
-    // CSVに出力
-    csv_file << std::fixed << std::setprecision(3);
-    csv_file << wm.ball().pos().x << "," << wm.ball().pos().y << ","
-            << wm.self().pos().x << "," << wm.self().pos().y << ","
-            << wm.self().vel().x << "," << wm.self().vel().y << ",";
-
-    for (size_t i = 0; i < heuristics_vec.size(); ++i) {
-        csv_file << heuristics_vec[i];
-        if (i < heuristics_vec.size() - 1) {
-            csv_file << ",";
+    // エピソード終了時のCSV出力
+    if (episode_end && !episode_buffer.empty()) {
+        double gamma = 0.99;
+        double G = 0.0;
+        std::vector<double> returns(episode_buffer.size());
+        for (int t = episode_buffer.size() - 1; t >= 0; --t) {
+            G = episode_buffer[t].reward + gamma * G;
+            returns[t] = G;
         }
-    }
-    csv_file << ",";
-
-    // 選択された行動インデックスの出力
-    csv_file << selected_idx << ",";
-
-    // 報酬の出力
-    csv_file << reward << std::endl;
-
+        static std::ofstream csv_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::out | std::ios::app);
+        if (csv_file.tellp() == 0) {
+            csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,discounted_reward" << std::endl;
+        }
+        for (size_t t = 0; t < episode_buffer.size(); ++t) {
+            for (auto v : episode_buffer[t].features) csv_file << v << ",";
+            csv_file << episode_buffer[t].cycle << ",";
+            csv_file << episode_buffer[t].action_index << "," << returns[t] << std::endl;
+        }
+        episode_buffer.clear();
+}
 
     // 選択したアクションを実行
     switch (selected_action.category()) {
