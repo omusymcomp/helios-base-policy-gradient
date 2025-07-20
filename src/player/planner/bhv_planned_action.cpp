@@ -49,6 +49,9 @@
 #include "basic_actions/neck_scan_field.h"
 #include "basic_actions/neck_turn_to_goalie_or_scan.h"
 
+#include "utils/step_data.h"
+#include "utils/episode_logger.h"
+
 #include "basic_actions/kick_table.h"
 #include "sample_field_evaluator.h" // ヒューリスティック計算用
 
@@ -95,17 +98,17 @@ namespace
     private:
     };
 
-    // 構造体を修正
-    struct StepData
-    {
-        std::vector<double> features;
-        int cycle; // サイクル数
-        int action_index;
-        double reward;
-        int player_num;
-    };
-    static std::vector<StepData> episode_buffer;
-    static bool prev_our_ball = false;
+    // // 構造体を修正
+    // struct StepData
+    // {
+    //     std::vector<double> features;
+    //     int cycle; // サイクル数
+    //     int action_index;
+    //     double reward;
+    //     int player_num;
+    // };
+    // static std::vector<StepData> episode_buffer;
+    // static bool prev_our_ball = false;
 
     /*-------------------------------------------------------------------*/
     /*!
@@ -397,23 +400,33 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         // std::cerr << "[DEBUG] SHOOTABLE reward: +5.0" << std::endl;
     }
 
+    // 前回のキッカー情報を保持
+    static SideID prev_kicker_side = SideID::NEUTRAL;
+    static int prev_kicker_unum = -1;
+
+    // 現在のキッカー情報を取得
+    SideID current_kicker_side = wm.lastKickerSide();
+    int current_kicker_unum = wm.lastKickerUnum(); // キッカーの背番号を取得する関数（仮）
+
     // 4. パス成功
-    const rcsc::AbstractPlayerObject *holder = predict_state.ballHolder();
-    if (holder != nullptr && holder->side() == wm.ourSide())
+    if (current_kicker_side == wm.ourSide() &&
+        prev_kicker_side == wm.ourSide() &&
+        current_kicker_unum != prev_kicker_unum)
     {
         reward += 3.0;
-        // std::cerr << "[DEBUG] PASS SUCCESS reward: +3.0" << std::endl;
+        std::cerr << "[DEBUG] PASS SUCCESS reward: +3.0" << std::endl;
     }
 
     // 5. ボールロスト
-    static const rcsc::AbstractPlayerObject *prev_holder = nullptr;
-    const rcsc::AbstractPlayerObject *current_holder = predict_state.ballHolder();
-    if (current_holder && current_holder->side() != wm.ourSide())
+    if (current_kicker_side != prev_kicker_side)
     {
         reward -= 1.0;
-        // std::cerr << "[DEBUG] BALL CONTROL BY OPPONENT: -1.0" << std::endl;
+        std::cerr << "[DEBUG] BALL CONTROL BY OPPONENT: -1.0" << std::endl;
     }
-    prev_holder = current_holder;
+
+    // 前回のキッカー情報を更新
+    prev_kicker_side = current_kicker_side;
+    prev_kicker_unum = current_kicker_unum;
 
     // 6. 奪われそうな位置に相手がいる
     if (wm.kickableOpponent() != nullptr)
@@ -444,74 +457,6 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
     step.reward = reward;
     step.player_num = wm.self().unum();
     episode_buffer.push_back(step);
-
-    // 初期化時に現在のボール保持状態を反映
-    // エピソード終了判定
-    bool our_ball = (predict_state.ballHolder() && predict_state.ballHolder()->side() == wm.ourSide());
-    bool episode_end = false;
-
-    // 現在のサイクル数を取得
-    int current_cycle = wm.time().cycle();
-
-    // デバッグ用ログ出力
-    if (predict_state.ballHolder())
-    {
-        std::cerr << "[DEBUG] Cycle: " << current_cycle
-                  << " | Current ball holder side: " << predict_state.ballHolder()->side() << std::endl;
-    }
-    else
-    {
-        std::cerr << "[DEBUG] Cycle: " << current_cycle
-                  << " | No current ball holder." << std::endl;
-    }
-
-    std::cerr << "[DEBUG] Cycle: " << current_cycle
-              << " | Previous ball holder state: " << (prev_our_ball ? "true" : "false") << std::endl;
-    std::cerr << "[DEBUG] Cycle: " << current_cycle
-              << " | Current ball holder state: " << (our_ball ? "true" : "false") << std::endl;
-    std::cerr << "[DEBUG] Cycle: " << current_cycle
-              << " | Current game mode: " << wm.gameMode().type() << std::endl;
-
-    // ゲームモードの条件を明確化
-    if (prev_our_ball && (!our_ball || wm.gameMode().type() == GameMode::AfterGoal_ || wm.gameMode().type() != GameMode::PlayOn))
-    {
-        episode_end = true;
-        std::cerr << "[DEBUG] Cycle: " << current_cycle
-                  << " | Episode ended. Reason: "
-                  << (!our_ball ? "Ball lost" : (wm.gameMode().type() == GameMode::AfterGoal_ ? "AfterGoal" : "PlayOn ended"))
-                  << std::endl;
-    }
-    prev_our_ball = our_ball;
-
-    // エピソード終了時のCSV出力
-    if (episode_end && !episode_buffer.empty())
-    {
-        std::cerr << "[DEBUG] Cycle: " << current_cycle
-                  << " | Episode buffer size: " << episode_buffer.size() << std::endl;
-        double gamma = 0.99;
-        double G = 0.0;
-        std::vector<double> returns(episode_buffer.size());
-        for (int t = episode_buffer.size() - 1; t >= 0; --t)
-        {
-            G = episode_buffer[t].reward + gamma * G;
-            returns[t] = G;
-        }
-        static std::ofstream csv_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::out | std::ios::app);
-        if (csv_file.tellp() == 0)
-        {
-            csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,discounted_reward,player_num" << std::endl;
-        }
-        for (size_t t = 0; t < episode_buffer.size(); ++t)
-        {
-            for (auto v : episode_buffer[t].features)
-                csv_file << v << ",";
-            csv_file << episode_buffer[t].cycle << ",";
-            csv_file << episode_buffer[t].action_index << ",";
-            csv_file << returns[t] << ",";
-            csv_file << episode_buffer[t].player_num << std::endl; // 背番号を出力
-        }
-        episode_buffer.clear();
-    }
 
     // 選択したアクションを実行
     switch (selected_action.category())

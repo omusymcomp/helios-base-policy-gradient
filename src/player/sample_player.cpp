@@ -34,11 +34,12 @@
 #include "field_analyzer.h"
 
 #include "action_chain_holder.h"
-#include "action_state_pair.h"
-#include "cooperative_action.h"
 #include "sample_field_evaluator.h"
 
 #include "soccer_role.h"
+
+#include "utils/episode_logger.h"
+#include "utils/step_data.h"
 
 #include "sample_communication.h"
 #include "keepaway_communication.h"
@@ -66,13 +67,6 @@
 #include "basic_actions/view_synch.h"
 #include "basic_actions/kick_table.h"
 
-#include "basic_actions/body_pass.h"
-#include "basic_actions/body_dribble.h"
-#include "basic_actions/body_hold_ball.h"
-#include "basic_actions/body_go_to_point.h"
-#include "basic_actions/body_clear_ball.h"
-#include "basic_actions/body_smart_kick.h"
-
 #include <rcsc/formation/formation.h>
 #include <rcsc/player/intercept_table.h>
 #include <rcsc/player/say_message_builder.h>
@@ -92,9 +86,6 @@
 #include <sstream>
 #include <string>
 #include <cstdlib>
-#include <torch/script.h>
-#include <torch/torch.h>
-#include <random>
 
 using namespace rcsc;
 
@@ -219,15 +210,6 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
                   << std::endl;
     }
 
-    //モデル読み込み処理を追加
-    std::string model_path = "/home/okayama/rcss/policy-gradient/model_with_attention.pt"; // 修正
-    if ( !loadModel(model_path) )
-    {
-        std::cerr << "***ERROR*** Failed to load NN model from "
-                  << model_path << std::endl;
-        return false;
-    }
-
     return true;
 }
 
@@ -236,10 +218,10 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
   main decision
   virtual method in super class
 */
-void SamplePlayer::actionImpl()
+void
+SamplePlayer::actionImpl()
 {
-    //std::cerr << "[DEBUG] Entering actionImpl. Time: " << world().time() << std::endl;
-    if (this->audioSensor().trainerMessageTime() == world().time())
+    if ( this->audioSensor().trainerMessageTime() == world().time() )
     {
         std::cerr << world().ourTeamName() << ' ' << world().self().unum()
                   << ' ' << world().time()
@@ -248,31 +230,37 @@ void SamplePlayer::actionImpl()
                   << std::endl;
     }
 
-    // 戦略とフィールド解析を更新
-    Strategy::instance().update(world());
-    FieldAnalyzer::instance().update(world());
 
-    // アクションチェーンの準備
+    //
+    // update strategy and analyzer
+    //
+    Strategy::instance().update( world() );
+    FieldAnalyzer::instance().update( world() );
+
+    //
+    // prepare action chain
+    //
     M_field_evaluator = createFieldEvaluator();
     M_action_generator = createActionGenerator();
 
-    ActionChainHolder::instance().setFieldEvaluator(M_field_evaluator);
-    ActionChainHolder::instance().setActionGenerator(M_action_generator);
+    ActionChainHolder::instance().setFieldEvaluator( M_field_evaluator );
+    ActionChainHolder::instance().setActionGenerator( M_action_generator );
 
-    // 特殊状況の処理
-    if (doPreprocess())
-    {   
-        //std::cerr << "[DEBUG] doPreprocess returned true. Exiting actionImpl." << std::endl;
-        dlog.addText(Logger::TEAM, __FILE__ ": preprocess done");
+    //
+    // special situations (tackle, objects accuracy, intention...)
+    //
+    if ( doPreprocess() )
+    {
+        dlog.addText( Logger::TEAM,
+                      __FILE__": preprocess done" );
         return;
     }
 
-     //
+    //
     // update action chain
     //
-    //std::cerr << "[DEBUG] Before updating ActionChainHolder." << std::endl;
-    ActionChainHolder::instance().update(world());
-    //std::cerr << "[DEBUG] After updating ActionChainHolder." << std::endl;
+    ActionChainHolder::instance().update( world() );
+
 
     //
     // create current role
@@ -281,133 +269,59 @@ void SamplePlayer::actionImpl()
     {
         role_ptr = Strategy::i().createRole( world().self().unum(), world() );
 
-        if (!role_ptr) {
-            //std::cerr << "[ERROR] Failed to create role for player: " << world().self().unum() << std::endl;
+        if ( ! role_ptr )
+        {
+            std::cerr << config().teamName() << ": "
+                      << world().self().unum()
+                      << " Error. Role is not registerd.\nExit ..."
+                      << std::endl;
+            M_client->setServerAlive( false );
             return;
         }
-        //std::cerr << "[DEBUG] Assigned role: " << role_ptr << " for player: " << world().self().unum() << std::endl;
     }
 
 
     //
     // override execute if role accept
     //
-    if (role_ptr->acceptExecution(world()))
-    {
-        //std::cerr << "[DEBUG] Role accepted execution: " << role_ptr << std::endl;
-        role_ptr->execute(this);
-        return;
-    }
-    else
-    {
-        //std::cerr << "[DEBUG] Role did not accept execution." << std::endl;
-    }
-
-    // PlayOn モードの場合
-    //std::cerr << "[DEBUG] Current game mode: " << world().gameMode().type() << std::endl;
-
-    if (world().gameMode().type() == GameMode::PlayOn)
-    {
-        std::cerr << "[DEBUG] Entering PlayOn mode." << std::endl;
-
-        ActionChainHolder::instance().update(world());
-        std::cerr << "[DEBUG] ActionChainHolder updated." << std::endl;
-
-        // 候補アクションの取得
-        std::vector<ActionStatePair> candidates = ActionChainHolder::instance().graph().getAllChain();
-        std::cerr << "[DEBUG] Number of action candidates: " << candidates.size() << std::endl;
-        for (const auto &candidate : candidates) {
-            std::cerr << "[DEBUG] Candidate action category: " << candidate.action().category() << std::endl;
-        }
-
-        if (candidates.empty())
-        {
-            std::cerr << "[WARN] No action candidates available." << std::endl;
-            return;
-        }
-
-        torch::Tensor input = this->extractFeatures(world());
-        std::cerr << "[DEBUG] Extracted features: " << input << std::endl;
-
-        // 入力次元のチェック
-        if (input.size(1) != 6) {
-            std::cerr << "[ERROR] Invalid input dimensions for the model: "
-                    << input.sizes() << std::endl;
-            return;
-        }
-
-        // NNモデルでスコアを予測
-        torch::Tensor logits;
-        try
-        {
-            logits = nn_model_->forward({input}).toTensor(); // shape: [1, num_actions]
-            std::cerr << "[DEBUG] Model logits: " << logits << std::endl;
-        }
-        catch (const c10::Error &e)
-        {
-            std::cerr << "[ERROR] NN forward failed: " << e.what() << std::endl;
-            return;
-        }
-
-        // Softmax による確率計算
-        torch::Tensor probabilities = torch::softmax(logits, 1); // shape: [1, num_actions]
-        std::cerr << "[DEBUG] Probabilities: " << probabilities << std::endl;
-
-        // 確率ベクトルを取得
-        if (probabilities.dim() != 2 || probabilities.size(0) != 1) {
-            std::cerr << "[ERROR] Invalid shape for probabilities tensor: "
-                    << probabilities.sizes() << std::endl;
-            return;
-        }
-
-        std::vector<float> probs(probabilities.data_ptr<float>(), probabilities.data_ptr<float>() + probabilities.size(1));
-
-        // 確率の正規化を確認
-        float sum_probs = std::accumulate(probs.begin(), probs.end(), 0.0f);
-        if (std::abs(sum_probs - 1.0f) > 1e-5) {
-            std::cerr << "[ERROR] Probabilities do not sum to 1: " << sum_probs << std::endl;
-            return;
-        }
-
-        // 負の確率値がないか確認
-        for (float p : probs) {
-            if (p < 0.0f) {
-                std::cerr << "[ERROR] Negative probability value: " << p << std::endl;
-                return;
-            }
-        }
-
-        // 確率に基づいて行動をサンプリング
-        static std::mt19937 gen(std::random_device{}());
-        std::discrete_distribution<int> dist(probs.begin(), probs.end());
-        int selected_idx = dist(gen);
-        std::cerr << "[DEBUG] Selected action index: " << selected_idx << std::endl;
-
-        if (selected_idx < 0 || selected_idx >= static_cast<int>(probs.size())) {
-            std::cerr << "[ERROR] Invalid action index sampled: " << selected_idx << std::endl;
-            return;
-        }
-
-        // 選択したアクションを取得
-        const CooperativeAction &selected_action = candidates[selected_idx].action();
-        std::cerr << "[DEBUG] Selected action category: " << selected_action.category() << std::endl;
-
-        // 選択したアクションを実行
-        doAction(selected_action);
-        std::cerr << "[DEBUG] Action executed." << std::endl;
+    if ( role_ptr->acceptExecution( world() ) )
+    {   
+        // std::cerr << "[DEBUG] role execution called at cycle: " << world().time().cycle() << std::endl;
+        role_ptr->execute( this );
+        // std::cerr << "[DEBUG] flush_episode_if_needed called after role execution" << std::endl;
+        flush_episode_if_needed(world());
         return;
     }
 
-    // ペナルティキックモードの場合
-    if (world().gameMode().isPenaltyKickMode())
+
+    //
+    // play_on mode
+    //
+    if ( world().gameMode().type() == GameMode::PlayOn )
     {
-        dlog.addText(Logger::TEAM, __FILE__ ": penalty kick");
-        Bhv_PenaltyKick().execute(this);
+        // std::cerr << "[DEBUG] PlayOn mode called at cycle: " << world().time().cycle() << std::endl;
+        role_ptr->execute( this );
+        // std::cerr << "[DEBUG] flush_episode_if_needed called in PlayOn mode" << std::endl;
+        // flush_episode_if_needed(world());
         return;
     }
 
-    // その他のセットプレイモードの場合
-    Bhv_SetPlay().execute(this);
+
+    //
+    // penalty kick mode
+    //
+    if ( world().gameMode().isPenaltyKickMode() )
+    {
+        dlog.addText( Logger::TEAM,
+                      __FILE__": penalty kick" );
+        Bhv_PenaltyKick().execute( this );
+        return;
+    }
+
+    //
+    // other set play mode
+    //
+    Bhv_SetPlay().execute( this );
 }
 
 /*-------------------------------------------------------------------*/
@@ -874,126 +788,10 @@ SamplePlayer::createFieldEvaluator() const
 {
     return FieldEvaluator::ConstPtr( new SampleFieldEvaluator );
 }
+
+
 /*-------------------------------------------------------------------*/
 /*!
-
-*/
-torch::Tensor SamplePlayer::extractFeatures(const rcsc::WorldModel & wm) 
-{
-    std::vector<double> features = {
-        wm.ball().pos().x / 50.0,  // 正規化例
-        wm.ball().pos().y / 34.0,
-        wm.self().pos().x / 50.0,
-        wm.self().pos().y / 34.0,
-        wm.self().vel().x / 5.0,
-        wm.self().vel().y / 5.0
-    }; // shape: [1, feature_dim]
-}
-/*-------------------------------------------------------------------*/
-/*!
-
-*/ 
-// int sample_from_probs(torch::Tensor probs) {
-//     float r = static_cast<float>(rand()) / RAND_MAX;
-//     float cum = 0.0;
-//     for (int i = 0; i < probs.size(0); ++i) {
-//         cum += probs[i].item<float>();
-//         if (r < cum) return i;
-//     }
-//     return probs.size(0) - 1;
-// }
-/*-------------------------------------------------------------------*/
-/*!
-
-*/
-void SamplePlayer::doAction(const CooperativeAction & action)
-{
-    std::cerr << "[DEBUG] Executing action of category: " << action.category() << std::endl;
-
-    switch (action.category()) {
-        case CooperativeAction::Hold:
-            if (!Body_HoldBall().execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Hold action. Trying Move action." << std::endl;
-                Body_GoToPoint(world().ball().pos(), 0.5, ServerParam::i().maxDashPower()).execute(this);
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Hold action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::Dribble:
-            if (!Body_Dribble(action.targetPoint(), 0.5, action.firstDashPower(), 3).execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Dribble action. Trying Move action." << std::endl;
-                Body_GoToPoint(world().ball().pos(), 0.5, ServerParam::i().maxDashPower()).execute(this);
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Dribble action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::Pass:
-            if (!Body_Pass().execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Pass action." << std::endl;
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Pass action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::Shoot:
-            if (!Body_SmartKick(action.targetPoint(),
-                                ServerParam::i().ballSpeedMax(),
-                                ServerParam::i().ballSpeedMax() * 0.96,
-                                3).execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Shoot action." << std::endl;
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Shoot action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::Clear:
-            if (!Body_ClearBall().execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Clear action." << std::endl;
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Clear action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::Move:
-            if (!Body_GoToPoint(action.targetPoint(), 0.5, action.firstDashPower()).execute(this)) {
-                std::cerr << "[ERROR] Failed to execute Move action." << std::endl;
-            } else {
-                std::cerr << "[DEBUG] Successfully executed Move action." << std::endl;
-            }
-            break;
-
-        case CooperativeAction::NoAction:
-        default:
-            std::cerr << "[WARN] Unknown or NoAction category: "
-                      << static_cast<int>(action.category()) << std::endl;
-            break;
-    }
-
-    std::cerr << "[DEBUG] Finished executing action of category: " << action.category() << std::endl;
-}
-/*-------------------------------------------------------------------*/
-/*!
-
-*/
-bool SamplePlayer::loadModel(const std::string & model_path)
-{
-    try {
-        nn_model_ = std::make_shared<torch::jit::script::Module>(
-            torch::jit::load("/home/okayama/rcss/policy-gradient/model_with_attention.pt") // 修正
-        );
-        std::cerr << "[INFO] Loaded NN model from: " << model_path << std::endl;
-        return true;
-    } catch (const c10::Error &e) {
-        std::cerr << "[ERROR] Failed to load model: " << e.what() << std::endl;
-        return false;
-    }
-}
-/*-------------------------------------------------------------------*/
-
-/*!
-
 */
 #include "actgen_cross.h"
 #include "actgen_direct_pass.h"
