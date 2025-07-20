@@ -302,7 +302,7 @@ SamplePlayer::actionImpl()
         // std::cerr << "[DEBUG] PlayOn mode called at cycle: " << world().time().cycle() << std::endl;
         role_ptr->execute( this );
         // std::cerr << "[DEBUG] flush_episode_if_needed called in PlayOn mode" << std::endl;
-        // flush_episode_if_needed(world());
+        flush_episode_if_needed(world());
         return;
     }
 

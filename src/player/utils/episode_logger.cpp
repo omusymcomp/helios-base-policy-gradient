@@ -6,17 +6,8 @@
 #include <rcsc/player/world_model.h>
 #include "planner/predict_state.h"
 
-// ヘッダー書き込み状態をグローバル変数として管理
-static bool header_written = false;
-
 void flush_episode_if_needed(const rcsc::WorldModel &wm)
 {
-    static int last_cycle = -1;
-    if (wm.time().cycle() == last_cycle)
-        return;
-    last_cycle = wm.time().cycle();
-
-    PredictState predict_state(wm);
     bool our_ball = wm.lastKickerSide() == wm.ourSide();
 
     // デバッグログを追加
@@ -55,18 +46,19 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
             returns[t] = G;
         }
 
-        // ファイルを初回オープン時にのみヘッダーを書き込む
-        static std::ofstream csv_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::out | std::ios::app);
+        // ファイルを開いて即座に書き込む
+        std::ofstream csv_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::out | std::ios::app);
         if (!csv_file.is_open())
         {
             std::cerr << "[ERROR] Failed to open CSV file for writing" << std::endl;
             return;
         }
 
-        if (!header_written)
+        // ファイルが空かどうかを確認してヘッダーを書き込む
+        std::ifstream check_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::ate | std::ios::binary);
+        if (check_file.tellg() == 0) // ファイルサイズが0の場合
         {
             csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,discounted_reward,player_num\n";
-            header_written = true;
             std::cerr << "[DEBUG] CSV header written." << std::endl;
         }
 
