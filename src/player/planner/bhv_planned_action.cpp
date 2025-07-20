@@ -215,7 +215,7 @@ Bhv_PlannedAction::Bhv_PlannedAction()
     {
         try
         {
-            std::string model_path = "/home/okayama/rcss/policy-gradient/model_with_attention.pt";
+            std::string model_path = "/home/okayama/rcss/policy-gradient/model.pt";
 
             // ファイルが存在するか確認
             if (std::filesystem::exists(model_path))
@@ -245,9 +245,8 @@ Bhv_PlannedAction::Bhv_PlannedAction()
  */
 bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 {
-    // dlog.addText(Logger::TEAM, __FILE__ ": Bhv_PlannedAction");
-    // std::cerr << "[DEBUG] Entering Bhv_PlannedAction::execute for player: "
-    //           << agent->world().self().unum() << std::endl;
+    dlog.addText(Logger::TEAM,
+                 __FILE__ ": Bhv_PlannedAction");
 
     if (doTurnToForward(agent))
     {
@@ -257,98 +256,12 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
     const ServerParam &SP = ServerParam::i();
     const WorldModel &wm = agent->world();
 
-    // 候補アクションの取得
-    std::vector<ActionStatePair> candidates;
+    const CooperativeAction &first_action = M_chain_graph.getFirstAction();
 
-    // PredictState を生成
-    PredictState predict_state(wm);
+    ActionChainGraph::debug_send_chain(agent, M_chain_graph.getAllChain());
 
-    // アクション候補を生成
-    ActionChainHolder::instance().actionGenerator()->generate(&candidates, predict_state, wm, {});
-
-    // std::cerr << "[DEBUG] Number of action candidates: " << candidates.size() << std::endl;
-    if (candidates.empty())
-    {
-        // std::cerr << "[ERROR] No action candidates generated." << std::endl;
-        return false;
-    }
-
-    // ニューラルネットワークがロードされていない場合の処理
-    if (!nn_model_)
-    {
-        std::cerr << "[WARN] NN model is not loaded. Using heuristic-based action selection." << std::endl;
-
-        // ランダムに行動を選択
-        static std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<int> dist(0, candidates.size() - 1);
-        int selected_idx = dist(gen);
-
-        const CooperativeAction &selected_action = candidates[selected_idx].action();
-        std::cerr << "[INFO] Selected action (heuristic): " << selected_action.category() << std::endl;
-    }
-
-    // 状態ベクトル作成
-    torch::Tensor input = torch::tensor({wm.ball().pos().x / 50.0,
-                                         wm.ball().pos().y / 34.0,
-                                         wm.self().pos().x / 50.0,
-                                         wm.self().pos().y / 34.0,
-                                         wm.self().vel().x / 5.0,
-                                         wm.self().vel().y / 5.0},
-                                        torch::kFloat)
-                              .unsqueeze(0); // shape: [1, 6]
-
-    // ヒューリスティックベクトル作成（例として10個のダミー値）
-    std::vector<float> dummy_heuristics_vec = {1.0, 0.5, 0.3, 0.7, 0.2, 0.9, 0.1, 0.6, 0.4, 0.8};
-    torch::Tensor heuristics = torch::from_blob(dummy_heuristics_vec.data(), {1, 10, 1}, torch::kFloat32).clone(); // shape: [1, 10, 1]
-
-    // std::cerr << "[DEBUG] Input tensor shape: " << input.sizes() << std::endl;
-    // std::cerr << "[DEBUG] Heuristics tensor shape: " << heuristics.sizes() << std::endl;
-
-    std::vector<torch::jit::IValue> inputs;
-    inputs.push_back(input);
-    inputs.push_back(heuristics);
-
-    torch::Tensor logits, weights;
-    try
-    {
-        auto outputs = nn_model_->forward(inputs).toTuple();
-        logits = outputs->elements()[0].toTensor().squeeze();  // ✅ ここで次元圧縮
-        weights = outputs->elements()[1].toTensor().squeeze(); // ✅ ここも同様に
-        // std::cerr << "[DEBUG] Model logits: " << logits << std::endl;
-        // std::cerr << "[DEBUG] Model weights: " << weights << std::endl;
-    }
-    catch (const c10::Error &e)
-    {
-        std::cerr << "[ERROR] NN forward failed: " << e.what() << std::endl;
-        return false;
-    }
-
-    // Softmax による確率計算
-    torch::Tensor probabilities = torch::softmax(logits, 0); // logits is 1D tensor: [num_actions]
-    if (probabilities.dim() != 1 || probabilities.size(0) <= 1)
-    {
-        std::cerr << "[ERROR] Softmax applied to invalid or trivial output." << std::endl;
-        return false;
-    }
-    // std::cerr << "[DEBUG] Probabilities: " << probabilities << std::endl;
-
-    // 確率に基づいて行動をサンプリング
-    std::vector<float> probs(
-        probabilities.data_ptr<float>(),
-        probabilities.data_ptr<float>() + probabilities.size(0));
-
-    static std::mt19937 gen(std::random_device{}());
-    std::discrete_distribution<int> dist(probs.begin(), probs.end());
-    int selected_idx = dist(gen);
-
-    if (selected_idx < 0 || selected_idx >= static_cast<int>(candidates.size()))
-    {
-        dlog.addText(Logger::TEAM, __FILE__ ": Invalid action index sampled: %d", selected_idx);
-        return false;
-    }
-
-    const CooperativeAction &selected_action = candidates[selected_idx].action();
-    dlog.addText(Logger::TEAM, __FILE__ ": Selected action category: %d", selected_action.category());
+    const Vector2D goal_pos = SP.theirTeamGoalPos();
+    agent->setNeckAction(new Neck_TurnToReceiver(M_chain_graph));
 
     /********************************************************************
      * 報酬の計算ブロック
@@ -414,14 +327,14 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         current_kicker_unum != prev_kicker_unum)
     {
         reward += 3.0;
-        std::cerr << "[DEBUG] PASS SUCCESS reward: +3.0" << std::endl;
+        // std::cerr << "[DEBUG] PASS SUCCESS reward: +3.0" << std::endl;
     }
 
     // 5. ボールロスト
     if (current_kicker_side != prev_kicker_side)
     {
         reward -= 1.0;
-        std::cerr << "[DEBUG] BALL CONTROL BY OPPONENT: -1.0" << std::endl;
+        // std::cerr << "[DEBUG] BALL CONTROL BY OPPONENT: -1.0" << std::endl;
     }
 
     // 前回のキッカー情報を更新
@@ -435,31 +348,33 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         // std::cerr << "[DEBUG] KICKABLE OPPONENT penalty: -1.0" << std::endl;
     }
 
-    // std::cerr << "[DEBUG] TOTAL REWARD: " << reward << std::endl;
-
-    // SampleFieldEvaluator のインスタンスを作成
-    SampleFieldEvaluator evaluator;
-
-    // heuristics_tensor ではなく、最初から vector で受け取る！
-    std::vector<double> heuristics_vec = evaluator.calculateHeuristics(predict_state);
-
-    // 状態特徴量ベクトルを作成
+    /********************************************************************
+     * 状態特徴量ベクトルの作成
+     *******************************************************************/
     std::vector<double> features = {
         wm.ball().pos().x, wm.ball().pos().y,
         wm.self().pos().x, wm.self().pos().y,
         wm.self().vel().x, wm.self().vel().y};
 
-    // バッファに追加
+    /********************************************************************
+     * バッファに追加
+     *******************************************************************/
+    SampleFieldEvaluator evaluator;
+    std::vector<double> heuristics = evaluator.calculateHeuristics(wm);
+
     StepData step;
     step.features = features;
     step.cycle = wm.time().cycle();
-    step.action_index = static_cast<int>(selected_idx);
+    step.action_index = static_cast<int>(first_action.category());
     step.reward = reward;
     step.player_num = wm.self().unum();
+    step.heuristics = heuristics; 
     episode_buffer.push_back(step);
 
-    // 選択したアクションを実行
-    switch (selected_action.category())
+    /********************************************************************
+     * 元の行動ロジック
+     *******************************************************************/
+    switch (first_action.category())
     {
     case CooperativeAction::Shoot:
     {
@@ -484,14 +399,13 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
             return false;
         }
 
-        const Vector2D &dribble_target = selected_action.targetPoint();
+        const Vector2D &dribble_target = first_action.targetPoint();
 
         dlog.addText(Logger::TEAM,
                      __FILE__ " (Bhv_PlannedAction) dribble target=(%.1f %.1f)",
                      dribble_target.x, dribble_target.y);
 
         NeckAction::Ptr neck;
-        const Vector2D goal_pos = SP.theirTeamGoalPos();
         double goal_dist = goal_pos.dist(dribble_target);
         if (goal_dist < 18.0)
         {
@@ -504,7 +418,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
             neck = NeckAction::Ptr(new Neck_TurnToGoalieOrScan(count_thr));
         }
 
-        if (Bhv_NormalDribble(selected_action, neck).execute(agent))
+        if (Bhv_NormalDribble(first_action, neck).execute(agent))
         {
             return true;
         }
@@ -555,7 +469,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         dlog.addText(Logger::TEAM,
                      __FILE__ " (Bhv_PlannedAction) move");
 
-        if (Body_GoToPoint(selected_action.targetPoint(),
+        if (Body_GoToPoint(first_action.targetPoint(),
                            1.0,
                            SP.maxDashPower())
                 .execute(agent))

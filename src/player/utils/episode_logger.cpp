@@ -10,10 +10,10 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
 {
     bool our_ball = wm.lastKickerSide() == wm.ourSide();
 
-    // デバッグログを追加
-    std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
-              << " | prev_our_ball: " << prev_our_ball
-              << ", our_ball: " << our_ball << std::endl;
+    // // デバッグログを追加
+    // std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
+    //           << " | prev_our_ball: " << prev_our_ball
+    //           << ", our_ball: " << our_ball << std::endl;
 
     bool episode_end = false;
 
@@ -21,19 +21,19 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
     if ((prev_our_ball && !our_ball) || wm.gameMode().type() != rcsc::GameMode::PlayOn)
     {
         episode_end = true;
-        std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
-                  << " | Episode ended. Reason: Ball lost or GameMode not PlayOn" << std::endl;
+        // std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
+        //           << " | Episode ended. Reason: Ball lost or GameMode not PlayOn" << std::endl;
     }
     prev_our_ball = our_ball;
 
-    if (episode_buffer.empty())
-    {
-        std::cerr << "[DEBUG] episode_buffer is empty, nothing to write to CSV" << std::endl;
-    }
-    else
-    {
-        std::cerr << "[DEBUG] episode_buffer size: " << episode_buffer.size() << std::endl;
-    }
+    // if (episode_buffer.empty())
+    // {
+    // //     std::cerr << "[DEBUG] episode_buffer is empty, nothing to write to CSV" << std::endl;
+    // // }
+    // else
+    // {
+    //     std::cerr << "[DEBUG] episode_buffer size: " << episode_buffer.size() << std::endl;
+    // }
 
     if (episode_end && !episode_buffer.empty())
     {
@@ -58,8 +58,13 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
         std::ifstream check_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::ate | std::ios::binary);
         if (check_file.tellg() == 0) // ファイルサイズが0の場合
         {
-            csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,discounted_reward,player_num\n";
-            std::cerr << "[DEBUG] CSV header written." << std::endl;
+            csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,discounted_reward,player_num";
+            for (int i = 1; i <= 10; ++i)
+            {
+                csv_file << ",heuristic_" << i;
+            }
+            csv_file << "\n";
+            // std::cerr << "[DEBUG] CSV header written." << std::endl;
         }
 
         for (size_t t = 0; t < episode_buffer.size(); ++t)
@@ -69,11 +74,18 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
             csv_file << episode_buffer[t].cycle << ",";
             csv_file << episode_buffer[t].action_index << ",";
             csv_file << returns[t] << ",";
-            csv_file << episode_buffer[t].player_num << "\n";
+            csv_file << episode_buffer[t].player_num;
+
+            // ヒューリスティック項を出力
+            for (const auto &heuristic : episode_buffer[t].heuristics)
+            {
+                csv_file << "," << heuristic;
+            }
+            csv_file << "\n";
         }
 
-        std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
-                  << " | Episode data written to CSV." << std::endl;
+        // std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
+        //           << " | Episode data written to CSV." << std::endl;
 
         episode_buffer.clear();
     }
