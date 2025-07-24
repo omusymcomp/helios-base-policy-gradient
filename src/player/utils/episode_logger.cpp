@@ -6,6 +6,25 @@
 #include <rcsc/player/world_model.h>
 #include "planner/predict_state.h"
 
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <string>
+
+extern std::string match_id;
+
+// 試合IDを生成する関数
+void initialize_match_id()
+{
+    std::ostringstream oss;
+    std::time_t now = std::time(nullptr);
+    oss << "match_" << std::put_time(std::localtime(&now), "%Y%m%d%H%M%S");
+    match_id = oss.str();
+    std::cerr << "[INFO] Match ID initialized: " << match_id << std::endl;
+}
+
+
 void flush_episode_if_needed(const rcsc::WorldModel &wm)
 {
     bool our_ball = wm.lastKickerSide() == wm.ourSide();
@@ -58,7 +77,7 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
         std::ifstream check_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::ate | std::ios::binary);
         if (check_file.tellg() == 0) // ファイルサイズが0の場合
         {
-            csv_file << "ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,original_reward,discounted_reward,player_num";
+            csv_file << "match_id,ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,original_reward,discounted_reward,player_num";
             for (int i = 1; i <= 10; ++i)
             {
                 csv_file << ",heuristic_" << i;
@@ -68,7 +87,8 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
         }
 
         for (size_t t = 0; t < episode_buffer.size(); ++t)
-        {
+        {   
+            csv_file << match_id << ","; 
             for (auto v : episode_buffer[t].features)
                 csv_file << v << ",";
             csv_file << episode_buffer[t].cycle << ",";

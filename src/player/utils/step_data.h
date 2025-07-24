@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <string>
 
 // 行動・状態・報酬など1ステップ分のログデータ構造
 struct StepData {
@@ -11,3 +12,4 @@ struct StepData {
     int player_num;      // 背番号
 };
 
+extern std::string match_id;
