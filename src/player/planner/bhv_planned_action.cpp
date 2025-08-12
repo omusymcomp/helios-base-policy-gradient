@@ -71,11 +71,49 @@
 #include <fstream> // CSV出力用
 #include <iomanip>
 #include <filesystem>
+#include <algorithm>
+#include <array> // 使わなければ不要
+#include <cmath> // pow を使うので
 
 using namespace rcsc;
 
 namespace
 {
+    // ==== ε-greedy 用ユーティリティ ====
+
+    // εの管理（必要なら設定ファイルから読み込む）
+    static double s_epsilon = 0.20; // 初期探索率
+    static constexpr double s_eps_min = 0.01;
+    static constexpr double s_eps_decay = 0.999; // 1サイクルごとに減衰(例)
+
+    // 簡易 0..1 乱数（サイクルと背番号で決定論シードにして再現性確保）
+    inline double rand01_det(int seed)
+    {
+        std::mt19937 gen(seed);
+        std::uniform_real_distribution<double> d(0.0, 1.0);
+        return d(gen);
+    }
+
+    // 探索用に整数を1つ選ぶ
+    inline int randint_det(int seed, int lo, int hi)
+    { // [lo, hi]
+        std::mt19937 gen(seed);
+        std::uniform_int_distribution<int> d(lo, hi);
+        return d(gen);
+    }
+
+    // 必要であれば「実行不能」行動を弾く
+    inline bool is_feasible(const CooperativeAction &a, const WorldModel &wm)
+    {
+        const auto gm = wm.gameMode().type();
+        if ((a.category() == CooperativeAction::Dribble ||
+             a.category() == CooperativeAction::Hold) &&
+            gm != GameMode::PlayOn && !wm.gameMode().isPenaltyKickMode())
+        {
+            return false;
+        }
+        return true;
+    }
 
     class IntentionTurnTo
         : public SoccerIntention
@@ -245,147 +283,127 @@ Bhv_PlannedAction::Bhv_PlannedAction()
  */
 bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 {
-    dlog.addText(Logger::TEAM,
-                 __FILE__ ": Bhv_PlannedAction");
+    dlog.addText(Logger::TEAM, __FILE__ ": Bhv_PlannedAction");
 
     if (doTurnToForward(agent))
-    {
         return true;
-    }
 
     const ServerParam &SP = ServerParam::i();
     const WorldModel &wm = agent->world();
 
-    const CooperativeAction &first_action = M_chain_graph.getFirstAction();
-
-    ActionChainGraph::debug_send_chain(agent, M_chain_graph.getAllChain());
-
     const Vector2D goal_pos = SP.theirTeamGoalPos();
     agent->setNeckAction(new Neck_TurnToReceiver(M_chain_graph));
 
-    /********************************************************************
-     * 報酬の計算ブロック
-     *******************************************************************/
+    // 候補取得＆デバッグ表示
+    const CooperativeAction &first_action = M_chain_graph.getFirstAction();
+    const auto all_chain = M_chain_graph.getAllChain();
+    ActionChainGraph::debug_send_chain(agent, all_chain);
+
+    // ε 減衰
+    s_epsilon = std::max(s_epsilon * s_eps_decay, s_eps_min);
+
+    // ε-greedy 選択
+    const CooperativeAction *chosen_ptr = &first_action; // フォールバック(=活用)
+    int chosen_idx = 0;
+
+    if (!all_chain.empty())
+    {
+        std::vector<int> feasible_idx;
+        feasible_idx.reserve(all_chain.size());
+        for (int i = 0; i < (int)all_chain.size(); ++i)
+        {
+            if (is_feasible(all_chain[i].action(), wm))
+                feasible_idx.push_back(i);
+        }
+
+        const int seed_base = wm.time().cycle() * 131 + wm.self().unum();
+        const bool explore = (!feasible_idx.empty()) && (rand01_det(seed_base) < s_epsilon);
+
+        if (explore)
+        {
+            const int pick = randint_det(seed_base + 17, 0, (int)feasible_idx.size() - 1);
+            chosen_idx = feasible_idx[pick];
+            chosen_ptr = &all_chain[chosen_idx].action();
+            agent->debugClient().addMessage("EXPLORE_eps");
+            dlog.addText(Logger::TEAM, __FILE__ " ε-greedy: EXPLORE eps=%.3f cat=%d",
+                         s_epsilon, (int)chosen_ptr->category());
+        }
+        else
+        {
+            chosen_idx = 0; // all_chain[0] は argmax 相当
+            chosen_ptr = &all_chain[chosen_idx].action();
+            agent->debugClient().addMessage("EXPLOIT");
+            dlog.addText(Logger::TEAM, __FILE__ " ε-greedy: EXPLOIT eps=%.3f cat=%d",
+                         s_epsilon, (int)chosen_ptr->category());
+        }
+    }
+
+    const CooperativeAction &chosen_action = *chosen_ptr;
+
+    /******************* 報酬計算 *******************/
     double reward = 0.0;
 
-    // 1. 前進距離（正：敵ゴール方向，負：自陣方向）
     const double ball_vel_x = wm.ball().vel().x;
-    const double VEL_COEFF = 1.0;
-
     if (std::abs(ball_vel_x) > 0.1)
-    { // ある程度動いていれば
-        if (ball_vel_x > 0.0)
-        {
-            reward += VEL_COEFF;
-            // std::cerr << "[DEBUG] BALL MOVING FORWARD reward: +" << VEL_COEFF << std::endl;
-        }
-        else
-        {
-            reward -= VEL_COEFF;
-            // std::cerr << "[DEBUG] BALL MOVING BACKWARD penalty: -" << VEL_COEFF << std::endl;
-        }
-    }
+        reward += (ball_vel_x > 0.0 ? 1.0 : -1.0);
 
-    // 2. ゴール・失点（AfterGoal_ 時に判定）
     if (wm.gameMode().type() == GameMode::AfterGoal_)
     {
-        if (wm.lastKickerSide() == wm.ourSide())
-        {
-            reward += 100.0;
-            // std::cerr << "[DEBUG] GOAL reward: +100.0" << std::endl;
-        }
-        else
-        {
-            reward -= 100.0;
-            // std::cerr << "[DEBUG] LOST GOAL penalty: -100.0" << std::endl;
-        }
+        reward += (wm.lastKickerSide() == wm.ourSide() ? 100.0 : -100.0);
     }
 
-    // 3. 枠内シュート可能か
     rcsc::AbstractPlayerObject::Cont opponents;
     for (const auto &opponent : wm.opponentsFromSelf())
-    {
         opponents.push_back(opponent);
-    }
     if (FieldAnalyzer::can_shoot_from(true, wm.self().pos(), opponents, 8))
-    {
         reward += 5.0;
-        // std::cerr << "[DEBUG] SHOOTABLE reward: +5.0" << std::endl;
-    }
 
-    // 前回のキッカー情報を保持
     static SideID prev_kicker_side = SideID::NEUTRAL;
     static int prev_kicker_unum = -1;
-
-    // 現在のキッカー情報を取得
     SideID current_kicker_side = wm.lastKickerSide();
-    int current_kicker_unum = wm.lastKickerUnum(); // キッカーの背番号を取得する関数（仮）
+    int current_kicker_unum = wm.lastKickerUnum();
 
-    // 4. パス成功
-    if (current_kicker_side == wm.ourSide() &&
-        prev_kicker_side == wm.ourSide() &&
-        current_kicker_unum != prev_kicker_unum)
-    {
+    if (current_kicker_side == wm.ourSide() && prev_kicker_side == wm.ourSide() && current_kicker_unum != prev_kicker_unum)
         reward += 3.0;
-        // std::cerr << "[DEBUG] PASS SUCCESS reward: +3.0" << std::endl;
-    }
 
-    // 5. ボールロスト
     if (current_kicker_side != prev_kicker_side)
-    {
         reward -= 1.0;
-        // std::cerr << "[DEBUG] BALL CONTROL BY OPPONENT: -1.0" << std::endl;
-    }
 
-    // 前回のキッカー情報を更新
     prev_kicker_side = current_kicker_side;
     prev_kicker_unum = current_kicker_unum;
 
-    // 6. 奪われそうな位置に相手がいる
     if (wm.kickableOpponent() != nullptr)
-    {
         reward -= 1.0;
-        // std::cerr << "[DEBUG] KICKABLE OPPONENT penalty: -1.0" << std::endl;
-    }
 
-    /********************************************************************
-     * 状態特徴量ベクトルの作成
-     *******************************************************************/
+    /******************* 特徴量 & バッファ *******************/
     std::vector<double> features = {
         wm.ball().pos().x, wm.ball().pos().y,
         wm.self().pos().x, wm.self().pos().y,
         wm.self().vel().x, wm.self().vel().y};
 
-    /********************************************************************
-     * バッファに追加
-     *******************************************************************/
     SampleFieldEvaluator evaluator;
     std::vector<double> heuristics = evaluator.calculateHeuristics(wm);
 
     StepData step;
     step.features = features;
     step.cycle = wm.time().cycle();
-    step.action_index = static_cast<int>(first_action.category());
+    step.action_index = static_cast<int>(chosen_action.category()); // ← 修正：typo & chosen_action
     step.reward = reward;
     step.player_num = wm.self().unum();
-    step.heuristics = heuristics; 
+    step.heuristics = heuristics;
     episode_buffer.push_back(step);
 
-    /********************************************************************
-     * 元の行動ロジック
-     *******************************************************************/
-    switch (first_action.category())
+    /******************* 行動実行 *******************/
+    switch (chosen_action.category())
     {
     case CooperativeAction::Shoot:
     {
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) shoot");
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) shoot");
         if (Body_ForceShoot().execute(agent))
         {
             agent->setNeckAction(new Neck_TurnToGoalieOrScan(2));
             return true;
         }
-
         break;
     }
 
@@ -394,32 +412,26 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         if (wm.gameMode().type() != GameMode::PlayOn && !wm.gameMode().isPenaltyKickMode())
         {
             agent->debugClient().addMessage("CancelChainDribble");
-            dlog.addText(Logger::TEAM,
-                         __FILE__ " (Bhv_PlannedAction) cancel dribble");
+            dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) cancel dribble");
             return false;
         }
 
-        const Vector2D &dribble_target = first_action.targetPoint();
+        const Vector2D &dribble_target = chosen_action.targetPoint(); // ← first→chosen
 
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) dribble target=(%.1f %.1f)",
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) dribble target=(%.1f %.1f)",
                      dribble_target.x, dribble_target.y);
 
         NeckAction::Ptr neck;
         double goal_dist = goal_pos.dist(dribble_target);
+        int count_thr = (goal_dist < 18.0 ? (goal_dist < 13.0 ? -1 : 0) : 0);
         if (goal_dist < 18.0)
         {
-            int count_thr = 0;
-            if (goal_dist < 13.0)
-            {
-                count_thr = -1;
-            }
             agent->debugClient().addMessage("ChainDribble:LookGoalie");
             neck = NeckAction::Ptr(new Neck_TurnToGoalieOrScan(count_thr));
         }
 
-        if (Bhv_NormalDribble(first_action, neck).execute(agent))
-        {
+        if (Bhv_NormalDribble(chosen_action, neck).execute(agent))
+        { // ← first→chosen
             return true;
         }
         break;
@@ -430,74 +442,58 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         if (wm.gameMode().type() != GameMode::PlayOn)
         {
             agent->debugClient().addMessage("CancelChainHold");
-            dlog.addText(Logger::TEAM,
-                         __FILE__ " (Bhv_PlannedAction) cancel hold");
+            dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) cancel hold");
             return false;
         }
 
         if (wm.ball().pos().x < -SP.pitchHalfLength() + 8.0 && wm.ball().pos().absY() < SP.goalHalfWidth() + 1.0)
         {
             agent->debugClient().addMessage("ChainHold:Clear");
-            dlog.addText(Logger::TEAM,
-                         __FILE__ " (Bhv_PlannedAction) cancel hold. clear ball");
+            dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) cancel hold. clear ball");
             Body_ClearBall().execute(agent);
             agent->setNeckAction(new Neck_ScanField());
             return true;
         }
 
         agent->debugClient().addMessage("hold");
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) hold");
-
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) hold");
         Body_HoldBall().execute(agent);
         agent->setNeckAction(new Neck_ScanField());
         return true;
-        break;
     }
 
     case CooperativeAction::Pass:
     {
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) pass");
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) pass");
         Bhv_PassKickFindReceiver(M_chain_graph).execute(agent);
         return true;
-        break;
     }
 
     case CooperativeAction::Move:
     {
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) move");
-
-        if (Body_GoToPoint(first_action.targetPoint(),
-                           1.0,
-                           SP.maxDashPower())
-                .execute(agent))
-        {
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) move");
+        if (Body_GoToPoint(chosen_action.targetPoint(), 1.0, SP.maxDashPower()).execute(agent))
+        { // ← first→chosen
             agent->setNeckAction(new Neck_ScanField());
             return true;
         }
-
         break;
     }
 
     case CooperativeAction::NoAction:
     {
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) no action");
-
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) no action");
         return true;
-        break;
     }
 
     default:
-        dlog.addText(Logger::TEAM,
-                     __FILE__ " (Bhv_PlannedAction) invalid category");
+        dlog.addText(Logger::TEAM, __FILE__ " (Bhv_PlannedAction) invalid category");
         break;
     }
 
     return false;
 }
+
 /*-------------------------------------------------------------------*/
 /*!
 
