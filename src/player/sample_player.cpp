@@ -197,6 +197,10 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
         return false;
     }
 
+    // match_id をここで一度だけ生成
+    initialize_match_id();
+    std::cerr << "[DEBUG] match_id generated: " << match_id << std::endl;
+
     if ( ! Strategy::instance().read( config().configDir() ) )
     {
         std::cerr << "***ERROR*** Failed to read team strategy." << std::endl;
