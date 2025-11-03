@@ -345,7 +345,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     const double ball_vel_x = wm.ball().vel().x;
     if (std::abs(ball_vel_x) > 0.1)
-        reward += (ball_vel_x > 0.0 ? 1.0 : -1.0);
+        reward += (ball_vel_x > 0.0 ? 10.0 : -1.0);
 
     if (wm.gameMode().type() == GameMode::AfterGoal_)
     {
