@@ -5,6 +5,7 @@
 #include <rcsc/common/logger.h>
 
 #include <torch/script.h>
+#include <array>
 #include <iostream>
 #include <cmath>
 #include <cfloat>
@@ -45,33 +46,40 @@ double SampleFieldEvaluator::operator()(const PredictState &state,
     // ヒューリスティックを計算
     std::vector<double> heuristics = calculateHeuristics(state);
 
-    // 状態とヒューリスティックをテンソルに変換
-    torch::Tensor state_tensor = torch::tensor({state.ball().pos().x / 50.0,
-                                                state.ball().pos().y / 34.0,
-                                                state.self().pos().x / 50.0,
-                                                state.self().pos().y / 34.0,
-                                                state.self().vel().x / 5.0,
-                                                state.self().vel().y / 5.0},
-                                               torch::kFloat)
-                                     .unsqueeze(0); // shape: [1, feature_dim]
+    // 状態特徴をテンソルに変換（学習時と同じスケールを維持）
+    std::array<float, 6> state_values = {
+        static_cast<float>(state.ball().pos().x),
+        static_cast<float>(state.ball().pos().y),
+        static_cast<float>(state.self().pos().x),
+        static_cast<float>(state.self().pos().y),
+        static_cast<float>(state.self().vel().x),
+        static_cast<float>(state.self().vel().y)};
 
-    torch::Tensor heuristics_tensor = torch::tensor(heuristics, torch::kFloat).unsqueeze(0); // shape: [1, num_heuristics]
+    torch::Tensor state_tensor = torch::from_blob(state_values.data(), {(long)state_values.size()}, torch::kFloat32).clone().unsqueeze(0);
+
+    std::vector<float> heuristics_values;
+    heuristics_values.reserve(heuristics.size());
+    for (double value : heuristics)
+    {
+        heuristics_values.push_back(static_cast<float>(value));
+    }
+    torch::Tensor heuristics_tensor = torch::from_blob(heuristics_values.data(), {(long)heuristics_values.size()}, torch::kFloat32).clone().unsqueeze(0);
 
     try
     {
         std::vector<torch::jit::IValue> inputs;
-        inputs.push_back(state_tensor); // ← フィールド情報のみを渡す
+        inputs.emplace_back(state_tensor);
+        inputs.emplace_back(heuristics_tensor);
 
-        // NNの出力は「重みベクトル」のみ（Tensor）であることを期待
-        torch::Tensor weights_tensor = nn_model_->forward(inputs).toTensor();
+        const auto outputs_tuple = nn_model_->forward(inputs).toTuple();
+        if (!outputs_tuple || outputs_tuple->elements().size() < 2)
+        {
+            std::cerr << "[ERROR] Unexpected NN output format." << std::endl;
+            return -DBL_MAX;
+        }
 
-        std::vector<double> heuristics = calculateHeuristics(state); // ヒューリスティック項を計算
-
-        // Tensor → std::vector 変換
-        std::vector<double> weights(weights_tensor.data_ptr<float>(),
-                                    weights_tensor.data_ptr<float>() + weights_tensor.numel());
-
-        return calculateFieldEvaluation(heuristics, weights); // 重み付き和を返す
+        torch::Tensor value_tensor = outputs_tuple->elements()[1].toTensor();
+        return value_tensor.squeeze().item<double>();
     }
     catch (const c10::Error &e)
     {
@@ -125,21 +133,4 @@ std::vector<double> SampleFieldEvaluator::calculateHeuristics(const PredictState
     heuristics.push_back(std::cos(state.self().body().radian()));
 
     return heuristics;
-}
-
-double SampleFieldEvaluator::calculateFieldEvaluation(const std::vector<double> &heuristics,
-                                                      const std::vector<double> &weights) const
-{
-    if (heuristics.size() != weights.size())
-    {
-        std::cerr << "[ERROR] Heuristics and weights size mismatch!" << std::endl;
-        return -DBL_MAX;
-    }
-
-    double evaluation = 0.0;
-    for (size_t i = 0; i < heuristics.size(); ++i)
-    {
-        evaluation += weights[i] * heuristics[i];
-    }
-    return evaluation;
 }

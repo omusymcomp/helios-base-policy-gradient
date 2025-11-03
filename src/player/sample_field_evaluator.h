@@ -17,10 +17,6 @@ private:
     std::string model_load_path_;              // モデル読み込みパス
     std::shared_ptr<torch::jit::script::Module> nn_model_;  // NN モデル本体
 
-    // 評価値を計算する関数
-    double calculateFieldEvaluation(const std::vector<double> &heuristics,
-                                    const std::vector<double> &weights) const;
-
 public:
     SampleFieldEvaluator();
     virtual ~SampleFieldEvaluator();

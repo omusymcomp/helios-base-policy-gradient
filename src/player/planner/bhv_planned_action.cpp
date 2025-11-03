@@ -53,8 +53,6 @@
 #include "utils/episode_logger.h"
 
 #include "basic_actions/kick_table.h"
-#include "sample_field_evaluator.h" // ヒューリスティック計算用
-
 #include <rcsc/player/intercept_table.h>
 #include <rcsc/player/soccer_intention.h>
 #include <rcsc/player/player_agent.h>
@@ -74,6 +72,8 @@
 #include <algorithm>
 #include <array> // 使わなければ不要
 #include <cmath> // pow を使うので
+#include <cstdlib>
+#include <iostream>
 
 using namespace rcsc;
 
@@ -81,10 +81,100 @@ namespace
 {
     // ==== ε-greedy 用ユーティリティ ====
 
-    // εの管理（必要なら設定ファイルから読み込む）
-    static double s_epsilon = 0.20; // 初期探索率
-    static constexpr double s_eps_min = 0.01;
-    static constexpr double s_eps_decay = 0.999; // 1サイクルごとに減衰(例)
+    inline double readEnvDouble(const char *name, double default_value)
+    {
+        if (const char *val = std::getenv(name))
+        {
+            char *end_ptr = nullptr;
+            const double parsed = std::strtod(val, &end_ptr);
+            if (end_ptr != val)
+            {
+                return parsed;
+            }
+        }
+        return default_value;
+    }
+
+    inline long readEnvLong(const char *name, long default_value)
+    {
+        if (const char *val = std::getenv(name))
+        {
+            char *end_ptr = nullptr;
+            const long parsed = std::strtol(val, &end_ptr, 10);
+            if (end_ptr != val)
+            {
+                return parsed;
+            }
+        }
+        return default_value;
+    }
+
+    inline bool isTrainingMode()
+    {
+        const char *mode = std::getenv("RL_TRAIN_MODE");
+        return !(mode && mode[0] == '0');
+    }
+
+    struct EpsilonSchedule
+    {
+        double epsilon;
+        double epsilon_min;
+        double epsilon_decay;
+    };
+
+    inline EpsilonSchedule initEpsilonSchedule()
+    {
+        EpsilonSchedule schedule{0.20, 0.01, 0.999};
+
+        const double eps_start = readEnvDouble("RL_EPS_START", 0.20);
+        const double eps_end = readEnvDouble("RL_EPS_END", 0.05);
+        const double eps_min_env = readEnvDouble("RL_EPS_MIN", eps_end);
+        const double eps_decay = readEnvDouble("RL_EPS_DECAY", 0.999);
+        const long total_matches = readEnvLong("RL_TOTAL_MATCHES", 0);
+        const long match_index = readEnvLong("RL_MATCH_INDEX", 0);
+
+        schedule.epsilon_decay = eps_decay;
+
+        if (!isTrainingMode())
+        {
+            schedule.epsilon = 0.0;
+            schedule.epsilon_min = 0.0;
+            return schedule;
+        }
+
+        const double low = std::min(eps_start, eps_end);
+        const double high = std::max(eps_start, eps_end);
+
+        double progress = 0.0;
+        if (total_matches > 1 && match_index > 0)
+        {
+            progress = static_cast<double>(match_index - 1) / static_cast<double>(total_matches - 1);
+            progress = std::clamp(progress, 0.0, 1.0);
+        }
+
+        double scheduled = eps_start + (eps_end - eps_start) * progress;
+        scheduled = std::clamp(scheduled, low, high);
+
+        double eps_min = std::clamp(eps_min_env, low, high);
+        if (eps_start >= eps_end)
+        {
+            eps_min = std::max(eps_min, eps_end);
+        }
+        else
+        {
+            eps_min = std::min(eps_min, eps_end);
+        }
+
+        schedule.epsilon = scheduled;
+        schedule.epsilon_min = eps_min;
+
+        return schedule;
+    }
+
+    const EpsilonSchedule S_EPS_SCHEDULE = initEpsilonSchedule();
+    static double s_epsilon = S_EPS_SCHEDULE.epsilon;
+    static double s_eps_min = S_EPS_SCHEDULE.epsilon_min;
+    static double s_eps_decay = S_EPS_SCHEDULE.epsilon_decay; // 1サイクルごとに減衰(例)
 
     // 簡易 0..1 乱数（サイクルと背番号で決定論シードにして再現性確保）
     inline double rand01_det(int seed)
@@ -113,6 +203,82 @@ namespace
             return false;
         }
         return true;
+    }
+
+    inline int policyIndexFromCategory(CooperativeAction::ActionCategory category)
+    {
+        switch (category)
+        {
+        case CooperativeAction::Hold:
+            return 0;
+        case CooperativeAction::Dribble:
+            return 1;
+        case CooperativeAction::Pass:
+            return 2;
+        case CooperativeAction::Shoot:
+            return 3;
+        default:
+            return -1;
+        }
+    }
+
+    const char *categoryName(CooperativeAction::ActionCategory category)
+    {
+        switch (category)
+        {
+        case CooperativeAction::Hold:
+            return "Hold";
+        case CooperativeAction::Dribble:
+            return "Dribble";
+        case CooperativeAction::Pass:
+            return "Pass";
+        case CooperativeAction::Shoot:
+            return "Shoot";
+        case CooperativeAction::Clear:
+            return "Clear";
+        case CooperativeAction::Move:
+            return "Move";
+        case CooperativeAction::NoAction:
+            return "NoAction";
+        default:
+            return "Unknown";
+        }
+    }
+
+    std::vector<double> computeHeuristics(const WorldModel &wm)
+    {
+        std::vector<double> heuristics;
+        heuristics.reserve(10);
+
+        const ServerParam &SP = ServerParam::i();
+
+        heuristics.push_back(wm.ball().pos().x);
+        heuristics.push_back(std::abs(wm.ball().pos().y));
+
+        double dist_to_goal = SP.theirTeamGoalPos().dist(wm.ball().pos());
+        heuristics.push_back(std::exp(-dist_to_goal / 10.0));
+
+        const PlayerType *self_type = wm.self().playerTypePtr();
+        double kickable_area = self_type ? self_type->kickableArea() : 0.0;
+        bool is_kickable = wm.self().pos().dist(wm.ball().pos()) <= kickable_area;
+        heuristics.push_back(is_kickable ? 1.0 : 0.0);
+
+        double rel_vel = (wm.self().vel() - wm.ball().vel()).r();
+        heuristics.push_back(std::tanh(rel_vel));
+
+        heuristics.push_back(std::tanh(wm.ball().vel().r()));
+
+        double dist_to_ball = wm.self().pos().dist(wm.ball().pos());
+        heuristics.push_back(std::exp(-dist_to_ball));
+
+        double goal_line_proximity = std::max(0.0, std::abs(wm.ball().pos().x) - (SP.pitchHalfLength() - 5.0)) / 5.0;
+        heuristics.push_back(goal_line_proximity);
+
+        heuristics.push_back(std::tanh(wm.self().vel().r()));
+
+        heuristics.push_back(std::cos(wm.self().body().radian()));
+
+        return heuristics;
     }
 
     class IntentionTurnTo
@@ -291,6 +457,80 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
     const ServerParam &SP = ServerParam::i();
     const WorldModel &wm = agent->world();
 
+    std::vector<double> features = {
+        wm.ball().pos().x, wm.ball().pos().y,
+        wm.self().pos().x, wm.self().pos().y,
+        wm.self().vel().x, wm.self().vel().y};
+
+    std::vector<double> heuristics = computeHeuristics(wm);
+
+    std::vector<double> policy_probs;
+    bool policy_available = false;
+
+    if (nn_model_)
+    {
+        std::vector<float> state_input;
+        state_input.reserve(features.size());
+        for (double value : features)
+        {
+            state_input.push_back(static_cast<float>(value));
+        }
+
+        std::vector<float> heuristic_input;
+        heuristic_input.reserve(heuristics.size());
+        for (double value : heuristics)
+        {
+            heuristic_input.push_back(static_cast<float>(value));
+        }
+
+        torch::Tensor state_tensor = torch::from_blob(state_input.data(), {(long)state_input.size()}, torch::kFloat32).clone().unsqueeze(0);
+        torch::Tensor heuristic_tensor = torch::from_blob(heuristic_input.data(), {(long)heuristic_input.size()}, torch::kFloat32).clone().unsqueeze(0);
+
+        try
+        {
+            std::vector<torch::jit::IValue> inputs;
+            inputs.emplace_back(state_tensor);
+            inputs.emplace_back(heuristic_tensor);
+
+            const auto outputs_tuple = nn_model_->forward(inputs).toTuple();
+            if (outputs_tuple && outputs_tuple->elements().size() >= 2)
+            {
+                torch::Tensor logits_tensor = outputs_tuple->elements()[0].toTensor().squeeze(0);
+                torch::Tensor probs_tensor = torch::softmax(logits_tensor, 0);
+                torch::Tensor probs_cpu = probs_tensor.detach().cpu();
+
+                policy_probs.resize(probs_cpu.size(0));
+                for (int i = 0; i < probs_cpu.size(0); ++i)
+                {
+                    policy_probs[i] = probs_cpu[i].item<double>();
+                }
+                policy_available = true;
+
+                std::cout << "[NN-ACT] cycle=" << wm.time().cycle()
+                          << " unum=" << wm.self().unum()
+                          << " probs=";
+                for (int i = 0; i < static_cast<int>(policy_probs.size()); ++i)
+                {
+                    std::cout << std::fixed << std::setprecision(3)
+                              << policy_probs[i];
+                    if (i + 1 < static_cast<int>(policy_probs.size()))
+                    {
+                        std::cout << ",";
+                    }
+                }
+                std::cout << " eps=" << std::fixed << std::setprecision(3) << s_epsilon << std::endl;
+            }
+            else
+            {
+                std::cerr << "[ERROR] Unexpected output format from NN policy." << std::endl;
+            }
+        }
+        catch (const c10::Error &e)
+        {
+            std::cerr << "[ERROR] NN forward failed in Bhv_PlannedAction: " << e.what() << std::endl;
+        }
+    }
+
     const Vector2D goal_pos = SP.theirTeamGoalPos();
     agent->setNeckAction(new Neck_TurnToReceiver(M_chain_graph));
 
@@ -317,24 +557,78 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         }
 
         const int seed_base = wm.time().cycle() * 131 + wm.self().unum();
-        const bool explore = (!feasible_idx.empty()) && (rand01_det(seed_base) < s_epsilon);
-
-        if (explore)
+        if (feasible_idx.empty())
         {
-            const int pick = randint_det(seed_base + 17, 0, (int)feasible_idx.size() - 1);
-            chosen_idx = feasible_idx[pick];
+            chosen_idx = 0;
             chosen_ptr = &all_chain[chosen_idx].action();
-            agent->debugClient().addMessage("EXPLORE_eps");
-            dlog.addText(Logger::TEAM, __FILE__ " ε-greedy: EXPLORE eps=%.3f cat=%d",
-                         s_epsilon, (int)chosen_ptr->category());
+            agent->debugClient().addMessage("EXPLOIT_NOFEAS");
+            dlog.addText(Logger::TEAM, __FILE__ " no feasible action, fallback to first cat=%d",
+                         (int)chosen_ptr->category());
         }
         else
         {
-            chosen_idx = 0; // all_chain[0] は argmax 相当
-            chosen_ptr = &all_chain[chosen_idx].action();
-            agent->debugClient().addMessage("EXPLOIT");
-            dlog.addText(Logger::TEAM, __FILE__ " ε-greedy: EXPLOIT eps=%.3f cat=%d",
-                         s_epsilon, (int)chosen_ptr->category());
+            const bool explore = (rand01_det(seed_base) < s_epsilon);
+
+            if (explore)
+            {
+                const int pick = randint_det(seed_base + 17, 0, (int)feasible_idx.size() - 1);
+                chosen_idx = feasible_idx[pick];
+                chosen_ptr = &all_chain[chosen_idx].action();
+                agent->debugClient().addMessage("EXPLORE_eps");
+                dlog.addText(Logger::TEAM, __FILE__ " ε-greedy: EXPLORE eps=%.3f cat=%d",
+                             s_epsilon, (int)chosen_ptr->category());
+            }
+            else
+            {
+                if (policy_available)
+                {
+                    int best_index = -1;
+                    double best_prob = -1.0;
+                    for (int idx : feasible_idx)
+                    {
+                        int policy_index = policyIndexFromCategory(all_chain[idx].action().category());
+                        if (policy_index < 0 || policy_index >= static_cast<int>(policy_probs.size()))
+                        {
+                            continue;
+                        }
+
+                        double prob = policy_probs[policy_index];
+                        if (prob > best_prob)
+                        {
+                            best_prob = prob;
+                            best_index = idx;
+                        }
+                    }
+
+                    if (best_index != -1)
+                    {
+                        chosen_idx = best_index;
+                        chosen_ptr = &all_chain[chosen_idx].action();
+                        agent->debugClient().addMessage("EXPLOIT_POLICY");
+                        dlog.addText(Logger::TEAM, __FILE__ " policy exploit eps=%.3f cat=%d prob=%.3f",
+                                     s_epsilon, (int)chosen_ptr->category(), best_prob);
+                        std::cout << "[NN-ACT] select=" << categoryName(chosen_ptr->category())
+                                  << " prob=" << std::fixed << std::setprecision(3) << best_prob
+                                  << std::endl;
+                    }
+                    else
+                    {
+                        chosen_idx = feasible_idx.front();
+                        chosen_ptr = &all_chain[chosen_idx].action();
+                        agent->debugClient().addMessage("EXPLOIT_FALLBACK");
+                        dlog.addText(Logger::TEAM, __FILE__ " policy fallback eps=%.3f cat=%d",
+                                     s_epsilon, (int)chosen_ptr->category());
+                    }
+                }
+                else
+                {
+                    chosen_idx = feasible_idx.front();
+                    chosen_ptr = &all_chain[chosen_idx].action();
+                    agent->debugClient().addMessage("EXPLOIT_DEFAULT");
+                    dlog.addText(Logger::TEAM, __FILE__ " default exploit eps=%.3f cat=%d",
+                                 s_epsilon, (int)chosen_ptr->category());
+                }
+            }
         }
     }
 
@@ -342,6 +636,32 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     /******************* 報酬計算 *******************/
     double reward = 0.0;
+
+    static bool s_progress_initialized = false;
+    static double s_prev_ball_x = 0.0;
+    static double s_prev_goal_dist = 0.0;
+
+    const double current_ball_x = wm.ball().pos().x;
+    const double current_goal_dist = goal_pos.dist(wm.ball().pos());
+
+    if (!s_progress_initialized)
+    {
+        s_prev_ball_x = current_ball_x;
+        s_prev_goal_dist = current_goal_dist;
+        s_progress_initialized = true;
+    }
+
+    const double delta_ball_x = current_ball_x - s_prev_ball_x;
+    const double delta_goal_dist = s_prev_goal_dist - current_goal_dist;
+
+    // ボールが前進した分を評価（1mあたり +2 点）
+    reward += 2.0 * delta_ball_x;
+
+    // ゴールへ近づいた分を評価（1m短縮あたり +1 点）
+    reward += 1.0 * delta_goal_dist;
+
+    s_prev_ball_x = current_ball_x;
+    s_prev_goal_dist = current_goal_dist;
 
     const double ball_vel_x = wm.ball().vel().x;
     if (std::abs(ball_vel_x) > 0.1)
@@ -376,14 +696,6 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         reward -= 1.0;
 
     /******************* 特徴量 & バッファ *******************/
-    std::vector<double> features = {
-        wm.ball().pos().x, wm.ball().pos().y,
-        wm.self().pos().x, wm.self().pos().y,
-        wm.self().vel().x, wm.self().vel().y};
-
-    SampleFieldEvaluator evaluator;
-    std::vector<double> heuristics = evaluator.calculateHeuristics(wm);
-
     StepData step;
     step.features = features;
     step.cycle = wm.time().cycle();
