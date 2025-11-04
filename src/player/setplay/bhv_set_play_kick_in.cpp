@@ -120,12 +120,7 @@ Bhv_SetPlayKickIn::doKick( PlayerAgent * agent )
     //
     // pass
     //
-    if ( Bhv_PlannedAction().execute( agent ) )
-    {
-        agent->setIntention( new IntentionWaitAfterSetPlayKick() );
-        agent->debugClient().addMessage( "KickIn:Plan" );
-        return;
-    }
+    // Kick-in 時は NN 方策による計画行動を利用しない（安全な従来処理を優先）
     // {
     //     Vector2D target_point;
     //     double ball_speed = 0.0;

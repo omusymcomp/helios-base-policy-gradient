@@ -172,6 +172,7 @@ namespace
     }
 
     const EpsilonSchedule S_EPS_SCHEDULE = initEpsilonSchedule();
+    const double S_POLICY_TEMPERATURE = std::max(1e-6, readEnvDouble("RL_POLICY_TEMPERATURE", 1.0));
     static double s_epsilon = S_EPS_SCHEDULE.epsilon;
     static double s_eps_min = S_EPS_SCHEDULE.epsilon_min;
     static double s_eps_decay = S_EPS_SCHEDULE.epsilon_decay; // 1サイクルごとに減衰(例)
@@ -496,6 +497,10 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
             if (outputs_tuple && outputs_tuple->elements().size() >= 2)
             {
                 torch::Tensor logits_tensor = outputs_tuple->elements()[0].toTensor().squeeze(0);
+                if (S_POLICY_TEMPERATURE > 1e-6 && std::fabs(S_POLICY_TEMPERATURE - 1.0) > 1e-6)
+                {
+                    logits_tensor = logits_tensor / S_POLICY_TEMPERATURE;
+                }
                 torch::Tensor probs_tensor = torch::softmax(logits_tensor, 0);
                 torch::Tensor probs_cpu = probs_tensor.detach().cpu();
 
@@ -511,7 +516,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
                           << " probs=";
                 for (int i = 0; i < static_cast<int>(policy_probs.size()); ++i)
                 {
-                    std::cout << std::fixed << std::setprecision(3)
+                    std::cout << std::fixed << std::setprecision(6)
                               << policy_probs[i];
                     if (i + 1 < static_cast<int>(policy_probs.size()))
                     {
@@ -608,7 +613,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
                         dlog.addText(Logger::TEAM, __FILE__ " policy exploit eps=%.3f cat=%d prob=%.3f",
                                      s_epsilon, (int)chosen_ptr->category(), best_prob);
                         std::cout << "[NN-ACT] select=" << categoryName(chosen_ptr->category())
-                                  << " prob=" << std::fixed << std::setprecision(3) << best_prob
+                                  << " prob=" << std::fixed << std::setprecision(6) << best_prob
                                   << std::endl;
                     }
                     else
@@ -654,22 +659,23 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
     const double delta_ball_x = current_ball_x - s_prev_ball_x;
     const double delta_goal_dist = s_prev_goal_dist - current_goal_dist;
 
-    // ボールが前進した分を評価（1mあたり +2 点）
-    reward += 2.0 * delta_ball_x;
+    const double clamped_dx = std::clamp(delta_ball_x, -0.5, 0.5);
+    const double clamped_goal = std::clamp(delta_goal_dist, -0.5, 0.5);
 
-    // ゴールへ近づいた分を評価（1m短縮あたり +1 点）
-    reward += 1.0 * delta_goal_dist;
+    // 前進とゴール接近を控えめに評価
+    reward += 1.0 * clamped_dx;
+    reward += 0.5 * clamped_goal;
 
     s_prev_ball_x = current_ball_x;
     s_prev_goal_dist = current_goal_dist;
 
     const double ball_vel_x = wm.ball().vel().x;
     if (std::abs(ball_vel_x) > 0.1)
-        reward += (ball_vel_x > 0.0 ? 10.0 : -1.0);
+        reward += (ball_vel_x > 0.0 ? 2.0 : -0.5);
 
     if (wm.gameMode().type() == GameMode::AfterGoal_)
     {
-        reward += (wm.lastKickerSide() == wm.ourSide() ? 100.0 : -100.0);
+        reward += (wm.lastKickerSide() == wm.ourSide() ? 20.0 : -20.0);
     }
 
     rcsc::AbstractPlayerObject::Cont opponents;
@@ -694,6 +700,26 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     if (wm.kickableOpponent() != nullptr)
         reward -= 1.0;
+
+    // サイドに寄り過ぎるとペナルティ
+    const double sideline_ratio = std::abs(wm.ball().pos().y) / ServerParam::i().pitchHalfWidth();
+    reward -= 0.5 * sideline_ratio;
+
+    // 行動種別でバランス調整
+    switch (chosen_action.category())
+    {
+    case CooperativeAction::Pass:
+        reward += 1.5; // パス試行を促す
+        break;
+    case CooperativeAction::Shoot:
+        reward += 2.5;
+        break;
+    case CooperativeAction::Dribble:
+        reward -= 0.2; // ドリブル連打の抑制
+        break;
+    default:
+        break;
+    }
 
     /******************* 特徴量 & バッファ *******************/
     StepData step;
