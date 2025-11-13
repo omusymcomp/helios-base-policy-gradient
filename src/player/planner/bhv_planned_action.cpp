@@ -659,67 +659,14 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
     const double delta_ball_x = current_ball_x - s_prev_ball_x;
     const double delta_goal_dist = s_prev_goal_dist - current_goal_dist;
 
-    const double clamped_dx = std::clamp(delta_ball_x, -0.5, 0.5);
-    const double clamped_goal = std::clamp(delta_goal_dist, -0.5, 0.5);
-
-    // 前進とゴール接近を控えめに評価
-    reward += 1.0 * clamped_dx;
-    reward += 0.5 * clamped_goal;
+    // 進行/接近量を±1でクリップし、1.0刻みの報酬に統一
+    const double clamped_dx = std::clamp(delta_ball_x, -1.0, 1.0);
+    const double clamped_goal = std::clamp(delta_goal_dist, -1.0, 1.0);
+    reward += clamped_dx;
+    reward += clamped_goal;
 
     s_prev_ball_x = current_ball_x;
     s_prev_goal_dist = current_goal_dist;
-
-    const double ball_vel_x = wm.ball().vel().x;
-    if (std::abs(ball_vel_x) > 0.1)
-        reward += (ball_vel_x > 0.0 ? 2.0 : -0.5);
-
-    if (wm.gameMode().type() == GameMode::AfterGoal_)
-    {
-        reward += (wm.lastKickerSide() == wm.ourSide() ? 20.0 : -20.0);
-    }
-
-    rcsc::AbstractPlayerObject::Cont opponents;
-    for (const auto &opponent : wm.opponentsFromSelf())
-        opponents.push_back(opponent);
-    if (FieldAnalyzer::can_shoot_from(true, wm.self().pos(), opponents, 8))
-        reward += 5.0;
-
-    static SideID prev_kicker_side = SideID::NEUTRAL;
-    static int prev_kicker_unum = -1;
-    SideID current_kicker_side = wm.lastKickerSide();
-    int current_kicker_unum = wm.lastKickerUnum();
-
-    if (current_kicker_side == wm.ourSide() && prev_kicker_side == wm.ourSide() && current_kicker_unum != prev_kicker_unum)
-        reward += 3.0;
-
-    if (current_kicker_side != prev_kicker_side)
-        reward -= 1.0;
-
-    prev_kicker_side = current_kicker_side;
-    prev_kicker_unum = current_kicker_unum;
-
-    if (wm.kickableOpponent() != nullptr)
-        reward -= 1.0;
-
-    // サイドに寄り過ぎるとペナルティ
-    const double sideline_ratio = std::abs(wm.ball().pos().y) / ServerParam::i().pitchHalfWidth();
-    reward -= 0.5 * sideline_ratio;
-
-    // 行動種別でバランス調整
-    switch (chosen_action.category())
-    {
-    case CooperativeAction::Pass:
-        reward += 1.5; // パス試行を促す
-        break;
-    case CooperativeAction::Shoot:
-        reward += 2.5;
-        break;
-    case CooperativeAction::Dribble:
-        reward -= 0.2; // ドリブル連打の抑制
-        break;
-    default:
-        break;
-    }
 
     /******************* 特徴量 & バッファ *******************/
     StepData step;
