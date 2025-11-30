@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <cmath>
 
 extern std::string match_id;
 
@@ -34,10 +35,11 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
     //           << " | prev_our_ball: " << prev_our_ball
     //           << ", our_ball: " << our_ball << std::endl;
 
+    const bool lost_possession = (prev_our_ball && !our_ball);
     bool episode_end = false;
 
     // エピソード終了条件：ボールロストまたはプレイオン以外の状態
-    if ((prev_our_ball && !our_ball) || wm.gameMode().type() != rcsc::GameMode::PlayOn)
+    if (lost_possession || wm.gameMode().type() != rcsc::GameMode::PlayOn)
     {
         episode_end = true;
         // std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
@@ -56,6 +58,20 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
 
     if (episode_end && !episode_buffer.empty())
     {
+        double terminal_bonus = 0.0;
+        if (lost_possession)
+        {
+            terminal_bonus -= 1.0;
+        }
+        if (wm.gameMode().type() == rcsc::GameMode::AfterGoal_)
+        {
+            terminal_bonus += (wm.lastKickerSide() == wm.ourSide() ? 3.0 : -3.0);
+        }
+        if (std::abs(terminal_bonus) > 1e-6)
+        {
+            episode_buffer.back().reward += terminal_bonus;
+        }
+
         double gamma = 0.99;
         double G = 0.0;
         std::vector<double> returns(episode_buffer.size());
