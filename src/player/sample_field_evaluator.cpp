@@ -3,14 +3,21 @@
 #include "field_analyzer.h"
 #include <rcsc/common/server_param.h>
 #include <rcsc/common/logger.h>
+#include <rcsc/player/player_predicate.h>
 
 #include <torch/script.h>
 #include <array>
 #include <iostream>
 #include <cmath>
 #include <cfloat>
+#include <algorithm>
 
 using namespace rcsc;
+
+namespace {
+constexpr double kLegacyNormalizationScale = 30.0; // reduce tanh saturation
+constexpr double kLegacyNormalizationClip = 10.0; // avoid overflow before tanh
+}
 
 SampleFieldEvaluator::SampleFieldEvaluator()
     : use_nn_(true),
@@ -133,4 +140,71 @@ std::vector<double> SampleFieldEvaluator::calculateHeuristics(const PredictState
     heuristics.push_back(std::cos(state.self().body().radian()));
 
     return heuristics;
+}
+
+double SampleFieldEvaluator::legacyFieldEvaluationRaw(const PredictState &state)
+{
+    const ServerParam &SP = ServerParam::i();
+    const AbstractPlayerObject *holder = state.ballHolder();
+
+    if (!holder)
+    {
+        return -DBL_MAX / 2.0;
+    }
+
+    const Vector2D &ball_pos = state.ball().pos();
+
+    if (ball_pos.x > (SP.pitchHalfLength() - 0.1) &&
+        ball_pos.absY() < SP.goalHalfWidth() + 2.0)
+    {
+        return 1.0e+7;
+    }
+
+    if (ball_pos.x < -(SP.pitchHalfLength() - 0.1) &&
+        ball_pos.absY() < SP.goalHalfWidth())
+    {
+        return -1.0e+7;
+    }
+
+    if (ball_pos.absX() > SP.pitchHalfLength() ||
+        ball_pos.absY() > SP.pitchHalfWidth())
+    {
+        return -DBL_MAX / 2.0;
+    }
+
+    double point = ball_pos.x;
+    point += std::max(0.0, 40.0 - SP.theirTeamGoalPos().dist(ball_pos));
+
+    const bool holder_is_self = holder->unum() == state.self().unum();
+    AbstractPlayerObject::Cont opponents =
+        state.getPlayers(new OpponentOrUnknownPlayerPredicate(state.ourSide()));
+
+    if (FieldAnalyzer::can_shoot_from(holder_is_self,
+                                      holder->pos(),
+                                      opponents,
+                                      PredictState::VALID_PLAYER_THRESHOLD))
+    {
+        point += 1.0e+6;
+
+        if (holder_is_self)
+        {
+            point += 5.0e+5;
+        }
+    }
+
+    return point;
+}
+
+double SampleFieldEvaluator::legacyFieldEvaluationNormalized(const PredictState &state)
+{
+    const double raw_score = legacyFieldEvaluationRaw(state);
+
+    if (!std::isfinite(raw_score))
+    {
+        return 0.0;
+    }
+
+    double scaled = raw_score / kLegacyNormalizationScale;
+    scaled = std::clamp(scaled, -kLegacyNormalizationClip, kLegacyNormalizationClip);
+    return std::tanh(scaled);
 }

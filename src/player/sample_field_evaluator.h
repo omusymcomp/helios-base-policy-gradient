@@ -27,6 +27,9 @@ public:
     
     // ヒューリスティックを計算する関数
     std::vector<double> calculateHeuristics(const PredictState & state) const;
+
+    static double legacyFieldEvaluationRaw(const PredictState & state);
+    static double legacyFieldEvaluationNormalized(const PredictState & state);
 };
 
 } // namespace rcsc

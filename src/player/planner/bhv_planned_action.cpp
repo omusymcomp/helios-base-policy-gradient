@@ -34,6 +34,8 @@
 #include "action_chain_graph.h"
 #include "action_state_pair.h"
 #include "field_analyzer.h"
+#include "predict_state.h"
+#include "../sample_field_evaluator.h"
 
 #include "bhv_pass_kick_find_receiver.h"
 #include "bhv_normal_dribble.h"
@@ -74,6 +76,7 @@
 #include <cmath> // pow を使うので
 #include <cstdlib>
 #include <iostream>
+#include <map>
 
 using namespace rcsc;
 
@@ -176,6 +179,34 @@ namespace
     static double s_epsilon = S_EPS_SCHEDULE.epsilon;
     static double s_eps_min = S_EPS_SCHEDULE.epsilon_min;
     static double s_eps_decay = S_EPS_SCHEDULE.epsilon_decay; // 1サイクルごとに減衰(例)
+
+    struct FieldPriorSchedule
+    {
+        double alpha;
+        double alpha_min;
+        double alpha_decay;
+    };
+
+    inline FieldPriorSchedule initFieldPriorSchedule()
+    {
+        FieldPriorSchedule schedule{};
+        schedule.alpha = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_START", 0.5));
+        schedule.alpha_min = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_MIN", 0.0));
+        schedule.alpha_decay = readEnvDouble("RL_FIELD_PRIOR_ALPHA_DECAY", 0.9995);
+        schedule.alpha_decay = std::clamp(schedule.alpha_decay, 0.0, 1.0);
+
+        if (!isTrainingMode())
+        {
+            double eval_alpha = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_EVAL", 0.0));
+            schedule.alpha = eval_alpha;
+            schedule.alpha_min = eval_alpha;
+        }
+
+        return schedule;
+    }
+
+    const FieldPriorSchedule S_FIELD_PRIOR_SCHEDULE = initFieldPriorSchedule();
+    static double s_field_prior_alpha = S_FIELD_PRIOR_SCHEDULE.alpha;
 
     // 簡易 0..1 乱数（サイクルと背番号で決定論シードにして再現性確保）
     inline double rand01_det(int seed)
@@ -465,6 +496,35 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     std::vector<double> heuristics = computeHeuristics(wm);
 
+    const auto &all_chain = M_chain_graph.getAllChain();
+
+    const double field_prior_alpha = s_field_prior_alpha;
+    bool legacy_prior_active = field_prior_alpha > 1e-9;
+    std::map<int, double> category_prior_map;
+    if (legacy_prior_active)
+    {
+        for (const auto &action_state : all_chain)
+        {
+            int policy_index = policyIndexFromCategory(action_state.action().category());
+            if (policy_index < 0)
+            {
+                continue;
+            }
+
+            double prior = SampleFieldEvaluator::legacyFieldEvaluationNormalized(action_state.state());
+            if (!std::isfinite(prior))
+            {
+                continue;
+            }
+
+            auto inserted = category_prior_map.try_emplace(policy_index, prior);
+            if (!inserted.second && prior > inserted.first->second)
+            {
+                inserted.first->second = prior;
+            }
+        }
+    }
+
     std::vector<double> policy_probs;
     bool policy_available = false;
 
@@ -497,6 +557,21 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
             if (outputs_tuple && outputs_tuple->elements().size() >= 2)
             {
                 torch::Tensor logits_tensor = outputs_tuple->elements()[0].toTensor().squeeze(0);
+                logits_tensor = logits_tensor.contiguous();
+
+                if (legacy_prior_active && !category_prior_map.empty())
+                {
+                    auto logits_accessor = logits_tensor.accessor<float, 1>();
+                    for (const auto &entry : category_prior_map)
+                    {
+                        if (entry.first < 0 || entry.first >= logits_tensor.size(0))
+                        {
+                            continue;
+                        }
+                        logits_accessor[entry.first] += static_cast<float>(entry.second * field_prior_alpha);
+                    }
+                }
+
                 if (S_POLICY_TEMPERATURE > 1e-6 && std::fabs(S_POLICY_TEMPERATURE - 1.0) > 1e-6)
                 {
                     logits_tensor = logits_tensor / S_POLICY_TEMPERATURE;
@@ -524,6 +599,16 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
                     }
                 }
                 std::cout << " eps=" << std::fixed << std::setprecision(3) << s_epsilon << std::endl;
+                if (legacy_prior_active && !category_prior_map.empty())
+                {
+                    std::cout << "[NN-ACT] legacy_prior_map:";
+                    for (const auto &entry : category_prior_map)
+                    {
+                        std::cout << " (" << entry.first << ":" << std::fixed << std::setprecision(4)
+                                  << entry.second << ")";
+                    }
+                    std::cout << " alpha=" << field_prior_alpha << std::endl;
+                }
             }
             else
             {
@@ -541,11 +626,15 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     // 候補取得＆デバッグ表示
     const CooperativeAction &first_action = M_chain_graph.getFirstAction();
-    const auto all_chain = M_chain_graph.getAllChain();
     ActionChainGraph::debug_send_chain(agent, all_chain);
 
     // ε 減衰
     s_epsilon = std::max(s_epsilon * s_eps_decay, s_eps_min);
+    if (s_field_prior_alpha > S_FIELD_PRIOR_SCHEDULE.alpha_min)
+    {
+        s_field_prior_alpha = std::max(s_field_prior_alpha * S_FIELD_PRIOR_SCHEDULE.alpha_decay,
+                                       S_FIELD_PRIOR_SCHEDULE.alpha_min);
+    }
 
     // ε-greedy 選択
     const CooperativeAction *chosen_ptr = &first_action; // フォールバック(=活用)

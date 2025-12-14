@@ -103,23 +103,30 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
         }
 
         for (size_t t = 0; t < episode_buffer.size(); ++t)
-        {   
-            csv_file << match_id << ","; 
+        {
+            std::ostringstream line;
+            line << match_id << ",";
             for (auto v : episode_buffer[t].features)
-                csv_file << v << ",";
-            csv_file << episode_buffer[t].cycle << ",";
-            csv_file << episode_buffer[t].action_index << ",";
-            csv_file << episode_buffer[t].reward << ","; // 本来の報酬を追加
-            csv_file << returns[t] << ",";
-            csv_file << episode_buffer[t].player_num;
+            {
+                line << v << ",";
+            }
+            line << episode_buffer[t].cycle << ",";
+            line << episode_buffer[t].action_index << ",";
+            line << episode_buffer[t].reward << ",";
+            line << returns[t] << ",";
+            line << episode_buffer[t].player_num;
 
             // ヒューリスティック項を出力
             for (const auto &heuristic : episode_buffer[t].heuristics)
             {
-                csv_file << "," << heuristic;
+                line << "," << heuristic;
             }
-            csv_file << "\n";
+
+            line << "\n";
+            csv_file << line.str();
         }
+
+        csv_file.flush();
 
         // std::cerr << "[DEBUG] Cycle: " << wm.time().cycle()
         //           << " | Episode data written to CSV." << std::endl;
