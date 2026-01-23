@@ -190,17 +190,35 @@ namespace
     inline FieldPriorSchedule initFieldPriorSchedule()
     {
         FieldPriorSchedule schedule{};
-        schedule.alpha = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_START", 0.5));
-        schedule.alpha_min = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_MIN", 0.0));
-        schedule.alpha_decay = readEnvDouble("RL_FIELD_PRIOR_ALPHA_DECAY", 0.9995);
-        schedule.alpha_decay = std::clamp(schedule.alpha_decay, 0.0, 1.0);
+        const double alpha_start = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_START", 0.5));
+        const double alpha_min_env = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_MIN", 0.0));
+        const double alpha_end_env = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_END", alpha_min_env));
+        schedule.alpha_decay = 1.0;
 
         if (!isTrainingMode())
         {
             double eval_alpha = std::max(0.0, readEnvDouble("RL_FIELD_PRIOR_ALPHA_EVAL", 0.0));
             schedule.alpha = eval_alpha;
             schedule.alpha_min = eval_alpha;
+            return schedule;
         }
+
+        schedule.alpha_min = std::min(alpha_min_env, alpha_start);
+        const double clamped_end = std::clamp(alpha_end_env, 0.0, std::max(alpha_start, schedule.alpha_min));
+
+        long total_matches = readEnvLong("RL_TOTAL_MATCHES", 0);
+        long match_index = readEnvLong("RL_MATCH_INDEX", 0);
+        double progress = 0.0;
+        if (total_matches > 1 && match_index > 0)
+        {
+            progress = static_cast<double>(match_index - 1) / static_cast<double>(total_matches - 1);
+            progress = std::clamp(progress, 0.0, 1.0);
+        }
+
+        double scheduled_alpha = alpha_start + (clamped_end - alpha_start) * progress;
+        scheduled_alpha = std::clamp(scheduled_alpha, schedule.alpha_min, alpha_start);
+        schedule.alpha = scheduled_alpha;
+        schedule.alpha_decay = 1.0;
 
         return schedule;
     }
