@@ -77,7 +77,7 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
         std::ifstream check_file("/home/okayama/rcss/policy-gradient/logs/data.csv", std::ios::ate | std::ios::binary);
         if (check_file.tellg() == 0) // ファイルサイズが0の場合
         {
-            csv_file << "match_id,ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,original_reward,discounted_reward,player_num";
+            csv_file << "match_id,ball_x,ball_y,player_x,player_y,player_vel_x,player_vel_y,cycle,action_index,original_reward,discounted_reward,field_eval_label,player_num";
             for (int i = 1; i <= 10; ++i)
             {
                 csv_file << ",heuristic_" << i;
@@ -95,6 +95,7 @@ void flush_episode_if_needed(const rcsc::WorldModel &wm)
             csv_file << episode_buffer[t].action_index << ",";
             csv_file << episode_buffer[t].reward << ","; // 本来の報酬を追加
             csv_file << returns[t] << ",";
+            csv_file << episode_buffer[t].field_eval_label << ",";
             csv_file << episode_buffer[t].player_num;
 
             // ヒューリスティック項を出力

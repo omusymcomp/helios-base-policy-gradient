@@ -345,7 +345,7 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
 
     const double ball_vel_x = wm.ball().vel().x;
     if (std::abs(ball_vel_x) > 0.1)
-        reward += (ball_vel_x > 0.0 ? 1.0 : -1.0);
+        reward += (ball_vel_x > 0.0 ? 10.0 : -1.0);
 
     if (wm.gameMode().type() == GameMode::AfterGoal_)
     {
@@ -382,12 +382,16 @@ bool Bhv_PlannedAction::execute(PlayerAgent *agent)
         wm.self().vel().x, wm.self().vel().y};
 
     SampleFieldEvaluator evaluator;
-    std::vector<double> heuristics = evaluator.calculateHeuristics(wm);
+    const PredictState current_state(wm);
+    const std::vector<ActionStatePair> empty_path;
+    std::vector<double> heuristics = evaluator.calculateHeuristics(current_state);
+    const double field_eval_label = evaluator(current_state, empty_path);
 
     StepData step;
     step.features = features;
     step.cycle = wm.time().cycle();
     step.action_index = static_cast<int>(chosen_action.category()); // ← 修正：typo & chosen_action
+    step.field_eval_label = field_eval_label;
     step.reward = reward;
     step.player_num = wm.self().unum();
     step.heuristics = heuristics;

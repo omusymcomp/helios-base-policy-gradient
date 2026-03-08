@@ -8,6 +8,7 @@ struct StepData {
     std::vector<double> heuristics;
     int cycle;           // サイクル数
     int action_index;    // 選択された行動インデックス
+    double field_eval_label; // field evaluator output for this state
     double reward;       // 単発報酬
     int player_num;      // 背番号
 };
