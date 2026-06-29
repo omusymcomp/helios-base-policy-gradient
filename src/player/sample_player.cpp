@@ -38,6 +38,8 @@
 
 #include "soccer_role.h"
 
+#include "utils/pretrain_episode_logger.h"
+
 #include "sample_communication.h"
 #include "keepaway_communication.h"
 #include "sample_freeform_message_parser.h"
@@ -194,6 +196,8 @@ SamplePlayer::initImpl( CmdLineParser & cmd_parser )
         return false;
     }
 
+    pretrain::initialize_match_id();
+
     if ( ! Strategy::instance().read( config().configDir() ) )
     {
         std::cerr << "***ERROR*** Failed to read team strategy." << std::endl;
@@ -284,6 +288,7 @@ SamplePlayer::actionImpl()
     if ( role_ptr->acceptExecution( world() ) )
     {
         role_ptr->execute( this );
+        pretrain::flush_episode_if_needed( world() );
         return;
     }
 
@@ -294,6 +299,7 @@ SamplePlayer::actionImpl()
     if ( world().gameMode().type() == GameMode::PlayOn )
     {
         role_ptr->execute( this );
+        pretrain::flush_episode_if_needed( world() );
         return;
     }
 

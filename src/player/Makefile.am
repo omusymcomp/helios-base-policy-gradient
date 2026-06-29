@@ -4,10 +4,10 @@ AUTOMAKE_OPTIONS = subdir-objects
 
 noinst_PROGRAMS = sample_player
 
-sample_player_CPPFLAGS = -I$(top_srcdir)/src/player/planner -I$(top_srcdir)/src/player/setplay
+sample_player_CPPFLAGS = -I$(top_srcdir)/src/player/planner -I$(top_srcdir)/src/player/setplay -I/home/okayama/libtorch/include -I/home/okayama/libtorch/include/torch/csrc/api/include
 sample_player_CXXFLAGS = -W -Wall
-sample_player_LDFLAGS =
-sample_player_LDADD =
+sample_player_LDFLAGS = -L/home/okayama/libtorch/lib -Wl,-rpath,/home/okayama/libtorch/lib
+sample_player_LDADD = -ltorch -ltorch_cpu -lc10
 
 sample_player_SOURCES = \
 	basic_actions/basic_actions.cpp \

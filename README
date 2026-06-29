@@ -1,8 +1,8 @@
 =======
-¤Ï¤¸¤á¤Ë
+Ï¤
 =======
-agent2d¤Ïlibrcsc¤ò»ÈÍÑ¤·¤¿¥·¥ó¥×¥ë¤Ê¥Á¡¼¥à¤Î¼ÂÁõÎã¤Ç¤¹¡¥RoboCup Soccer
-Simulator(rcssserver)¥Ð¡¼¥¸¥ç¥ó14¤ÇÆ°ºî¤µ¤»¤ë¤³¤È¤òÁÛÄê¤·¤Æ¤¤¤Þ¤¹¡¥
+agent2dlibrcscÑ¤×¥Ê¥Î¼Ç¤RoboCup Soccer
+Simulator(rcssserver)Ð¡14Æ°î¤µë¤³È¤ê¤·Æ¤Þ¤
 
 - RoboCup Soccer Simulator Homepage: http://sserver.sf.net/
 - RoboCup Official Homepage: http://www.robocup.org/
@@ -12,7 +12,7 @@ Simulator(rcssserver)¥Ð¡¼¥¸¥ç¥ó14¤ÇÆ°ºî¤µ¤»¤ë¤³¤È¤òÁÛÄê¤·¤Æ¤¤¤Þ¤¹¡¥
 ==========
 REFERENCES
 ==========
-ÏÀÊ¸Åù¤Ç¤Î»²¾ÈÀè¤È¤·¤Æ¤Ï°Ê²¼¤ò¤´ÍøÍÑ¤¯¤À¤µ¤¤¡¥
+Ê¸Ç¤Î»È¤Æ¤Ï°Ê²Ñ¤
 
 Hidehisa Akiyama, Tomoharu Nakashima, HELIOS Base: An Open Source
 Package for the RoboCup Soccer 2D Simulation, In Sven Behnke, Manuela
@@ -36,40 +36,40 @@ Berlin, 2014.
 }
 
 ============
-Í×µá¥é¥¤¥Ö¥é¥ê
+×µé¥¤Ö¥
 ============
-agent2d-3.1.0 ¤Ï°Ê²¼¤Î¥é¥¤¥Ö¥é¥ê¤òÍ×µá¤·¤Þ¤¹¡¥
+agent2d-3.1.0 Ï°Ê²Î¥é¥¤Ö¥×µá¤·Þ¤
 
  - boost-1.32 or later
  - librcsc-4.0.x
 
 =====
-¥Ó¥ë¥É
+Ó¥
 =====
-¥Ñ¥Ã¥±¡¼¥¸¤òÅ¸³«¤·¤¿¥Ç¥£¥ì¥¯¥È¥êÆâÉô¤Ç°Ê²¼¤Î¥³¥Þ¥ó¥É¤ò¼Â¹Ô¤·¤Þ¤¹:
+Ñ¥Ã¥Å¸Ç¥ì¥¯È¥Ç°Ê²Î¥Þ¥É¤Â¹Ô¤Þ¤:
 
 ./configure
 make
 
-librcsc¤ò¥·¥¹¥Æ¥à¤Î¥Ç¥£¥ì¥¯¥È¥ê¤Ë¥¤¥ó¥¹¥È¡¼¥ë¤·¤Æ¤¤¤Ê¤¤¾ì¹ç¡¤°Ê²¼¤Î¤è
-¤¦¤Ëconfigure¤Î'--with-librcsc'¥ª¥×¥·¥ç¥ó¤Ë¤è¤Ã¤Ælibrcsc¤Î¥¤¥ó¥¹¥È¡¼¥ë
-¥Ñ¥¹¤ò»ØÄê¤·¤Ê¤±¤ì¤Ð¤Ê¤ê¤Þ¤»¤ó¡¥
+librcscò¥·¥Æ¥Î¥Ç¥ì¥¯È¥Ë¥ó¥¹¥È¡ë¤·Æ¤Ê¤ç¡¤Ê²Î¤
+configure'--with-librcsc'×¥Ë¤Ã¤librcscÎ¥ó¥¹¥È¡
+Ñ¥ê¤·Ê¤Ð¤Ê¤Þ¤
 
 ./configure --with-librcsc=/path/to/librcsc/prefix
 
-¤³¤Î¾ì¹ç¡¤´Ä¶­ÊÑ¿ô LD_LIBRARY_PATH ¤âÀßÄê¤¹¤ëÉ¬Í×¤¬¤¢¤ë¤«¤â¤·¤ì¤Þ¤»¤ó¡¥
+Î¾ç¡¤Ä¶Ñ¿ LD_LIBRARY_PATH ê¤¹É¬×¤ë¤«â¤·Þ¤
 
 =================
-¥¤¥ó¥¹¥È¡¼¥ë»þ¤ÎÀßÄê
+ó¥¹¥È¡
 =================
-agent2d¤ò¥Ó¥ë¥É¤¹¤ëÁ°¤Ë¡¤¥Ñ¥Ã¥±¡¼¥¸¤Ë´Þ¤Þ¤ì¤ëconfigure¥¹¥¯¥ê¥×¥È¤Î¥ª¥×
-¥·¥ç¥ó¤Ë¤è¤Ã¤ÆÀßÄê¤òÊÑ¹¹¤¹¤ë¤³¤È¤¬¤Ç¤­¤Þ¤¹¡¥configure¤Ç»ØÄê¤Ç¤­¤ë¥ª¥×
-¥·¥ç¥ó¤Î¾ÜºÙ¤Ï¡¤'configure --help'¤ò¼Â¹Ô¤¹¤ë¤³¤È¤Ç»²¾È¤Ç¤­¤Þ¤¹¡¥
+agent2dÓ¥É¤Ë¡Ñ¥Ã¥Ë´Þ¤Þ¤configure×¥È¤Î¥
+Ë¤Ã¤Ñ¹ë¤³È¤Ç¤Þ¤configureÇ»Ç¤ë¥ª
+Î¾ÜºÙ¤Ï¡'configure --help'Â¹Ô¤ë¤³È¤Ç»È¤Ç¤Þ¤
 
 ==========
-¥Á¡¼¥à¤Îµ¯Æ°
+ÎµÆ°
 ==========
-agent2d¤Î¥Á¡¼¥à¤òµ¯Æ°¤¹¤ë¤Ë¤Ï¡¤src¥Ç¥£¥ì¥¯¥È¥êÆâ¤Ç°Ê²¼¤Î¥³¥Þ¥ó¥É¤ò¥¿¥¤
-¥×¤·¤Þ¤¹¡¥
+agent2dÎ¥Æ°Ë¤Ï¡srcÇ¥ì¥¯È¥Ç°Ê²Î¥Þ¥É¤ò¥¿¥
+×¤Þ¤
 
 `./start.sh'

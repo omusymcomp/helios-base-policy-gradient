@@ -68,6 +68,8 @@ private:
     void recoverForever();
     void doSubstitute();
     void doKeepaway();
+    void doHeatmapEvaluation();
+    bool heatmapModeEnabled() const;
 
 };
 

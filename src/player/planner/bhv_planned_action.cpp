@@ -34,6 +34,8 @@
 #include "action_chain_graph.h"
 #include "action_state_pair.h"
 #include "field_analyzer.h"
+#include "predict_state.h"
+#include "utils/pretrain_episode_logger.h"
 
 #include "bhv_pass_kick_find_receiver.h"
 #include "bhv_normal_dribble.h"
@@ -51,6 +53,9 @@
 
 #include "basic_actions/kick_table.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <rcsc/player/intercept_table.h>
 #include <rcsc/player/soccer_intention.h>
 #include <rcsc/player/player_agent.h>
@@ -60,6 +65,174 @@
 using namespace rcsc;
 
 namespace {
+
+double calculate_reward( const WorldModel & wm )
+{
+    double reward = 0.0;
+
+    static bool s_progress_initialized = false;
+    static double s_prev_ball_x = 0.0;
+    static double s_prev_goal_dist = 0.0;
+    static bool s_prev_our_ball = false;
+    static int s_prev_our_score = -1;
+    static int s_prev_their_score = -1;
+
+    const Vector2D goal_pos = ServerParam::i().theirTeamGoalPos();
+    const double current_ball_x = wm.ball().pos().x;
+    const double current_goal_dist = goal_pos.dist( wm.ball().pos() );
+    const bool current_our_ball = ( wm.lastKickerSide() == wm.ourSide() );
+    const int current_our_score
+        = ( wm.ourSide() == LEFT
+            ? wm.gameMode().scoreLeft()
+            : wm.gameMode().scoreRight() );
+    const int current_their_score
+        = ( wm.ourSide() == LEFT
+            ? wm.gameMode().scoreRight()
+            : wm.gameMode().scoreLeft() );
+
+    if ( ! s_progress_initialized )
+    {
+        s_prev_ball_x = current_ball_x;
+        s_prev_goal_dist = current_goal_dist;
+        s_prev_our_ball = current_our_ball;
+        s_prev_our_score = current_our_score;
+        s_prev_their_score = current_their_score;
+        s_progress_initialized = true;
+    }
+
+    const double delta_ball_x = current_ball_x - s_prev_ball_x;
+    const double delta_goal_dist = s_prev_goal_dist - current_goal_dist;
+    const double clamped_dx = std::clamp( delta_ball_x, -1.0, 1.0 );
+    const double clamped_goal = std::clamp( delta_goal_dist, -1.0, 1.0 );
+    reward += clamped_dx;
+    reward += clamped_goal;
+
+    if ( current_our_score > s_prev_our_score )
+    {
+        reward += 3.0;
+    }
+    if ( current_their_score > s_prev_their_score )
+    {
+        reward -= 3.0;
+    }
+    if ( s_prev_our_ball && ! current_our_ball )
+    {
+        reward -= 1.0;
+    }
+
+    s_prev_ball_x = current_ball_x;
+    s_prev_goal_dist = current_goal_dist;
+    s_prev_our_ball = current_our_ball;
+    s_prev_our_score = current_our_score;
+    s_prev_their_score = current_their_score;
+
+    return reward;
+}
+
+std::vector<double> build_pretrain_features( const PredictState & state )
+{
+    std::vector<double> features;
+    features.reserve( 52 );
+
+    features.push_back( state.ball().pos().x );
+    features.push_back( state.ball().pos().y );
+
+    const AbstractPlayerObject * holder = state.ballHolder();
+    if ( holder )
+    {
+        features.push_back( 1.0 );
+        features.push_back( static_cast<double>( holder->unum() ) );
+        features.push_back( holder->pos().x );
+        features.push_back( holder->pos().y );
+    }
+    else
+    {
+        features.push_back( 0.0 );
+        features.push_back( 0.0 );
+        features.push_back( 0.0 );
+        features.push_back( 0.0 );
+    }
+
+    features.push_back( static_cast<double>( state.self().unum() ) );
+    features.push_back( state.ourSide() == LEFT ? -1.0 : ( state.ourSide() == RIGHT ? 1.0 : 0.0 ) );
+
+    AbstractPlayerObject::Cont opponents
+        = state.getPlayers( new OpponentOrUnknownPlayerPredicate( state.ourSide() ) );
+    std::sort( opponents.begin(), opponents.end(),
+               []( const AbstractPlayerObject * lhs, const AbstractPlayerObject * rhs ) {
+                   const int lu = lhs ? lhs->unum() : Unum_Unknown;
+                   const int ru = rhs ? rhs->unum() : Unum_Unknown;
+                   const int lk = ( lu == Unum_Unknown ? 999 : lu );
+                   const int rk = ( ru == Unum_Unknown ? 999 : ru );
+                   if ( lk != rk ) return lk < rk;
+                   const double lx = lhs ? lhs->pos().x : 0.0;
+                   const double rx = rhs ? rhs->pos().x : 0.0;
+                   if ( lx != rx ) return lx < rx;
+                   const double ly = lhs ? lhs->pos().y : 0.0;
+                   const double ry = rhs ? rhs->pos().y : 0.0;
+                   return ly < ry;
+               } );
+
+    for ( int i = 0; i < 11; ++i )
+    {
+        if ( i < static_cast<int>( opponents.size() ) && opponents[static_cast<size_t>( i )] )
+        {
+            const AbstractPlayerObject * opp = opponents[static_cast<size_t>( i )];
+            features.push_back( static_cast<double>( opp->unum() ) );
+            features.push_back( opp->pos().x );
+            features.push_back( opp->pos().y );
+            features.push_back( 1.0 );
+        }
+        else
+        {
+            features.push_back( 0.0 );
+            features.push_back( 0.0 );
+            features.push_back( 0.0 );
+            features.push_back( 0.0 );
+        }
+    }
+
+    return features;
+}
+
+std::vector<double> calculate_heuristics( const PredictState & state )
+{
+    std::vector<double> heuristics;
+    heuristics.reserve( 10 );
+    const ServerParam & SP = ServerParam::i();
+
+    const AbstractPlayerObject * holder = state.ballHolder();
+    if ( ! holder )
+    {
+        heuristics.assign( 10, 0.0 );
+        return heuristics;
+    }
+
+    heuristics.push_back( state.ball().pos().x );
+    heuristics.push_back( std::abs( state.ball().pos().y ) );
+
+    const double dist_to_goal = SP.theirTeamGoalPos().dist( state.ball().pos() );
+    heuristics.push_back( std::exp( -dist_to_goal / 10.0 ) );
+
+    const PlayerType * self_type = state.self().playerTypePtr();
+    const double kickable_area = self_type ? self_type->kickableArea() : 0.0;
+    const bool is_kickable = state.self().pos().dist( state.ball().pos() ) <= kickable_area;
+    heuristics.push_back( is_kickable ? 1.0 : 0.0 );
+
+    const double rel_vel = ( state.self().vel() - state.ball().vel() ).r();
+    heuristics.push_back( std::tanh( rel_vel ) );
+    heuristics.push_back( std::tanh( state.ball().vel().r() ) );
+
+    const double dist_to_ball = state.self().pos().dist( state.ball().pos() );
+    heuristics.push_back( std::exp( -dist_to_ball ) );
+
+    const double goal_line_proximity =
+        std::max( 0.0, std::abs( state.ball().pos().x ) - ( SP.pitchHalfLength() - 5.0 ) ) / 5.0;
+    heuristics.push_back( goal_line_proximity );
+    heuristics.push_back( std::tanh( state.self().vel().r() ) );
+    heuristics.push_back( std::cos( state.self().body().radian() ) );
+    return heuristics;
+}
 
 class IntentionTurnTo
     : public SoccerIntention {
@@ -215,6 +388,33 @@ Bhv_PlannedAction::execute( PlayerAgent * agent )
     const WorldModel & wm = agent->world();
 
     const CooperativeAction & first_action = M_chain_graph.getFirstAction();
+    const double reward = calculate_reward( wm );
+    const PredictState current_state( wm );
+
+    double field_eval_label = 0.0;
+    std::vector<double> heuristics;
+    {
+        FieldEvaluator::ConstPtr evaluator = ActionChainHolder::instance().fieldEvaluator();
+        heuristics = calculate_heuristics( current_state );
+        if ( evaluator )
+        {
+            const std::vector< ActionStatePair > empty_path;
+            field_eval_label = (*evaluator)( current_state, empty_path );
+        }
+    }
+
+    if ( pretrain::logging_enabled() && pretrain::logging_player_allowed( wm ) )
+    {
+        pretrain::StepData step;
+        step.features = build_pretrain_features( current_state );
+        step.cycle = wm.time().cycle();
+        step.action_index = static_cast< int >( first_action.category() );
+        step.field_eval_label = field_eval_label;
+        step.reward = reward;
+        step.player_num = wm.self().unum();
+        step.heuristics = heuristics;
+        pretrain::append_step( step );
+    }
 
     ActionChainGraph::debug_send_chain( agent, M_chain_graph.getAllChain() );
 

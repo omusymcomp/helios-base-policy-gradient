@@ -42,6 +42,7 @@
 #include <limits>
 #include <cstdio>
 #include <cmath>
+#include <cstdlib>
 
 #define DEBUG_PROFILE
 // #define ACTION_CHAIN_DEBUG
@@ -104,6 +105,78 @@ debug_paint_evaluate_color( const Vector2D & pos,
     dlog.addRect( Logger::ACTION_CHAIN,
                   pos.x - 0.1, pos.y - 0.1, 0.2, 0.2,
                   r, g, b, true );
+}
+
+inline
+bool
+chain_eval_log_enabled()
+{
+    static int initialized = 0;
+    static bool enabled = true;
+
+    if ( ! initialized )
+    {
+        const char * env = std::getenv( "RCSS_CHAIN_EVAL_LOG" );
+        if ( env )
+        {
+            enabled = ! ( env[0] == '0'
+                          || env[0] == 'f'
+                          || env[0] == 'F'
+                          || env[0] == 'n'
+                          || env[0] == 'N' );
+        }
+        initialized = 1;
+    }
+
+    return enabled;
+}
+
+inline
+void
+log_chain_eval_entry( const WorldModel & wm,
+                      const int chain_count,
+                      const std::vector< ActionStatePair > & path,
+                      const double eval )
+{
+    if ( ! chain_eval_log_enabled() )
+    {
+        return;
+    }
+
+    const PredictState current_state( wm );
+    const PredictState * terminal_state = &current_state;
+    if ( ! path.empty() )
+    {
+        terminal_state = &( path.back().state() );
+    }
+
+    const Vector2D & bpos = terminal_state->ball().pos();
+    const int holder_unum = terminal_state->ballHolderUnum();
+
+    std::string first_action = "none";
+    if ( ! path.empty() )
+    {
+        const CooperativeAction & a = path.front().action();
+        std::ostringstream ss;
+        ss << a.category() << ':' << a.index();
+        if ( a.description() )
+        {
+            ss << ':' << a.description();
+        }
+        first_action = ss.str();
+    }
+
+    dlog.addText( Logger::ACTION_CHAIN,
+                  "CHAIN_EVAL cycle=%ld self=%d chain=%d len=%zu eval=%.8f bx=%.4f by=%.4f holder=%d first=%s",
+                  wm.time().cycle(),
+                  wm.self().unum(),
+                  chain_count,
+                  path.size(),
+                  eval,
+                  bpos.x,
+                  bpos.y,
+                  holder_unum,
+                  first_action.c_str() );
 }
 
 }
@@ -421,6 +494,7 @@ ActionChainGraph::calculateResultBestFirstSearch( const WorldModel & wm,
     const double current_evaluation = (*M_evaluator)( current_state, empty_path );
     ++M_chain_count;
     ++(*n_evaluated);
+    log_chain_eval_entry( wm, M_chain_count, empty_path, current_evaluation );
 #ifdef ACTION_CHAIN_DEBUG
     write_chain_log( wm, M_chain_count, empty_path, current_evaluation );
 #endif
@@ -498,6 +572,7 @@ ActionChainGraph::calculateResultBestFirstSearch( const WorldModel & wm,
 
             double ev = (*M_evaluator)( (*it).state(), candidate_series );
             ++(*n_evaluated);
+            log_chain_eval_entry( wm, M_chain_count, candidate_series, ev );
 #ifdef ACTION_CHAIN_DEBUG
             write_chain_log( wm, M_chain_count, candidate_series, ev );
 #endif

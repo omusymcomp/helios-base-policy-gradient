@@ -30,18 +30,23 @@
 #include "field_evaluator.h"
 #include "predict_state.h"
 
+#include <memory>
+#include <string>
 #include <vector>
 
-namespace rcsc {
-class AbstractPlayerObject;
-class Vector2D;
-}
+#include <torch/script.h>
 
 class ActionStatePair;
 
 class SampleFieldEvaluator
     : public FieldEvaluator {
 private:
+    bool use_nn_;
+    std::string model_load_path_;
+    std::shared_ptr< torch::jit::script::Module > nn_model_;
+
+    double calculateFieldEvaluation( const std::vector< double > & heuristics,
+                                     const std::vector< double > & weights ) const;
 
 public:
     SampleFieldEvaluator();
@@ -52,6 +57,8 @@ public:
     virtual
     double operator()( const PredictState & state,
                        const std::vector< ActionStatePair > & path ) const;
+
+    std::vector< double > calculateHeuristics( const PredictState & state ) const;
 };
 
 #endif
